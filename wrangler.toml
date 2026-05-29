@@ -1,0 +1,20 @@
+name = "review-gate"
+main = "src/index.js"
+compatibility_date = "2026-05-01"
+
+# Pure webhook gate: no cron triggers, no polling.
+#
+# Non-secret configuration (safe to commit). Override per deployment to reuse
+# the tool with any review bot:
+[vars]
+# Commit status context that branch protection requires.
+STATUS_CONTEXT = "review-gate/codex-clean"
+# Comma-separated bot login(s) whose clean review counts as a pass.
+REVIEW_BOT_LOGINS = "chatgpt-codex-connector,chatgpt-codex-connector[bot]"
+# Substring that marks a clean review from the bot above.
+CLEAN_REVIEW_TEXT = "Codex Review: Didn't find any major issues."
+
+# Secrets (set with `wrangler secret put <NAME>`, never commit them):
+#   GITHUB_APP_ID            App ID from the GitHub App settings page.
+#   GITHUB_APP_PRIVATE_KEY   App private key in PKCS#8 PEM format.
+#   GITHUB_WEBHOOK_SECRET    Webhook secret configured on the GitHub App.
