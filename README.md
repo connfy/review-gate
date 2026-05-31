@@ -62,6 +62,21 @@ Secrets are set with `wrangler secret put` and never committed:
 `pull_request_review_thread` means thread resolution is reflected in real time —
 something the GitHub Actions trigger set could not do.
 
+GitHub App event subscriptions and repository permissions must both be present:
+
+| Event | Required repository permission | Why |
+| --- | --- | --- |
+| Pull request | Pull requests: Read-only | Recompute the gate when PR state or the head commit changes. |
+| Pull request review | Pull requests: Read-only | Recompute when the reviewer submits a PR review body. |
+| Pull request review comment | Pull requests: Read-only | Recompute when inline review comments are created. |
+| Pull request review thread | Pull requests: Read-only | Recompute when review threads are resolved or unresolved. |
+| Issue comment | Issues: Read-only | Recompute when the reviewer leaves the clean pass as a PR timeline comment. |
+
+Do not skip `Issue comment`: GitHub models pull-request timeline comments as
+issue comments. Without both the `Issues: Read-only` permission and the
+`Issue comment` subscription, a clean Codex pass comment can appear on the PR
+without ever triggering the Worker.
+
 ## Setup
 
 ### 1. Create the GitHub App
@@ -71,7 +86,7 @@ Create a GitHub App (org or personal account) with:
 - **Repository permissions**
   - Commit statuses: **Read and write**
   - Pull requests: **Read-only**
-  - Contents: **Read-only**
+  - Issues: **Read-only**
 - **Subscribe to events:** Pull request, Pull request review, Pull request review
   comment, Pull request review thread, Issue comment
 - **Webhook URL:** the deployed Worker URL (fill in after step 3, or use a
@@ -115,6 +130,25 @@ stable, no branch protection changes are needed when cutting over from an Action
 workflow that used the same context — but make sure the App is installed and the
 Worker is live **before** removing the old workflow, otherwise the status is
 simply not reported (PRs stay blocked, which is the safe failure mode).
+
+If you add or change GitHub App permissions after installing the App, each
+installation owner must approve the updated permissions. Existing installations
+do not automatically receive newly requested permissions until that approval is
+complete.
+
+### Troubleshooting webhook delivery
+
+If a PR has a clean pass comment but the status stays failed:
+
+- Confirm the clean comment was created after the latest PR head commit.
+- Confirm all current review threads are resolved.
+- In the GitHub App settings, check **Advanced > Recent deliveries** for an
+  `issue_comment` delivery at the time the clean pass comment was created.
+- If there is no delivery, check that both `Issues: Read-only` and the
+  `Issue comment` event subscription are enabled and approved.
+- If delivery exists but the status is unchanged, inspect the delivery response
+  and Worker logs. `202 Accepted` means the Worker accepted the webhook and any
+  later failure happened during GitHub API re-evaluation or status reporting.
 
 ## Security notes
 
