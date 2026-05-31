@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
-  fastFailureResultFromEvent,
   pullRequestRefFromEvent,
   shouldIgnoreEvent,
   verifySignature,
@@ -14,17 +13,6 @@ const config = {
   botLogins: new Set(["chatgpt-codex-connector[bot]"]),
   cleanText: "Codex Review: Didn't find any major issues.",
 };
-
-function pullRequestPayload({ action = "opened", draft = false } = {}) {
-  return {
-    action,
-    pull_request: {
-      number: 12,
-      draft,
-      head: { sha: "abc123" },
-    },
-  };
-}
 
 function issueCommentPayload({ user, body, action = "created" } = {}) {
   return {
@@ -88,33 +76,6 @@ test("events without an installation id are ignored", () => {
     pull_request: { number: 7 },
   });
   assert.equal(ref, null);
-});
-
-test("fresh-head pull_request events can fast-fail without full evaluation", () => {
-  const result = fastFailureResultFromEvent(
-    "pull_request",
-    pullRequestPayload({ action: "synchronize" }),
-  );
-  assert.equal(result.state, "failure");
-  assert.equal(result.sha, "abc123");
-  assert.match(result.details[0], /No clean review pass/);
-});
-
-test("draft pull_request events can fast-fail without full evaluation", () => {
-  const result = fastFailureResultFromEvent(
-    "pull_request",
-    pullRequestPayload({ action: "converted_to_draft", draft: true }),
-  );
-  assert.equal(result.state, "failure");
-  assert.match(result.details[0], /draft/);
-});
-
-test("non-fresh non-draft pull_request events still need full evaluation", () => {
-  const result = fastFailureResultFromEvent(
-    "pull_request",
-    pullRequestPayload({ action: "ready_for_review" }),
-  );
-  assert.equal(result, null);
 });
 
 test("user issue comments are ignored as gate signals", () => {

@@ -7,7 +7,6 @@
 import { evaluateGate, resolveConfig } from "./gate.js";
 import { getCachedInstallationToken, RepoClient } from "./github.js";
 import {
-  fastFailureResultFromEvent,
   pullRequestRefFromEvent,
   shouldIgnoreEvent,
   verifySignature,
@@ -32,9 +31,7 @@ async function evaluateAndReport(env, ref, config) {
   );
   const client = new RepoClient(token, ref.owner, ref.repo, config.statusContext);
 
-  const result = ref.fastResult
-    ? ref.fastResult
-    : await evaluateFromGitHub(client, ref, config);
+  const result = await evaluateFromGitHub(client, ref, config);
 
   await client.setStatus(result.sha, {
     state: result.state,
@@ -103,8 +100,6 @@ export default {
     if (shouldIgnoreEvent(eventName, payload, config)) {
       return new Response("Ignored", { status: 202 });
     }
-
-    ref.fastResult = fastFailureResultFromEvent(eventName, payload);
 
     // Do the GitHub round-trips after responding so the webhook delivery is
     // acknowledged promptly even if the API calls take a moment.

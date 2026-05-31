@@ -17,9 +17,9 @@ and that status becomes your merge signal:
 
 Why you'll want it:
 
-- No cron, no polling workflow, no GitHub Actions minutes burned re-checking the
-  same PR. GitHub sends a webhook, the Worker recomputes once, done. It runs for
-  very little.
+- No cron, no polling workflow, no GitHub Actions minutes burned watching the
+  same PR. GitHub sends a webhook, the Worker recomputes the gate for the
+  affected PR, and it runs for very little.
 - One Worker plus one GitHub App covers dozens of repositories at once.
 - Push a new commit and the status automatically resets to red. No more
   accidental merges on stale approvals.
@@ -225,7 +225,8 @@ npm run dev
 Files worth knowing when you poke around:
 
 - `src/gate.js` - the gate decision logic (pure functions, easy to read).
-- `src/webhook.js` - signature verification, event routing, webhook fast paths.
+- `src/webhook.js` - signature verification, event routing, and cheap comment
+  filtering.
 - `src/github.js` - GitHub App auth, installation token caching, GitHub API calls.
 - `src/index.js` - the Cloudflare Worker entrypoint.
 - `test/` - `node --test` unit tests.

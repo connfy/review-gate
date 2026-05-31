@@ -1,6 +1,6 @@
 // Pure webhook helpers: signature verification, event routing, and cheap
-// event-level decisions that avoid full PR re-evaluation when the payload is
-// already enough to know the gate cannot pass.
+// event-level decisions that avoid full PR re-evaluation when the payload cannot
+// move the gate forward.
 
 import { resolveConfig } from "./gate.js";
 
@@ -11,8 +11,6 @@ const RELEVANT_EVENTS = new Set([
   "pull_request_review_thread",
   "issue_comment",
 ]);
-
-const FRESH_HEAD_ACTIONS = new Set(["opened", "synchronize"]);
 
 function loginFor(user) {
   if (!user || typeof user !== "object") {
@@ -90,41 +88,6 @@ export function pullRequestRefFromEvent(eventName, payload) {
     repo: repository.name,
     prNumber: Number(prNumber),
     installationId: Number(installationId),
-  };
-}
-
-export function fastFailureResultFromEvent(eventName, payload) {
-  if (eventName !== "pull_request") {
-    return null;
-  }
-
-  const pr = payload?.pull_request;
-  const sha = pr?.head?.sha;
-  if (pr?.number == null || !sha) {
-    return null;
-  }
-
-  const action = String(payload?.action ?? "");
-  const details = [];
-  if (pr.draft) {
-    details.push("PR is draft; the initial review may not run.");
-  }
-  if (FRESH_HEAD_ACTIONS.has(action)) {
-    details.push(
-      "No clean review pass after the latest head update. Need a clean review comment.",
-    );
-  }
-
-  if (details.length === 0) {
-    return null;
-  }
-
-  return {
-    prNumber: Number(pr.number),
-    sha: String(sha),
-    state: "failure",
-    description: "A clean review is required before merge.",
-    details,
   };
 }
 
