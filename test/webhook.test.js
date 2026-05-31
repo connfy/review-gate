@@ -1,10 +1,41 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { pullRequestRefFromEvent, verifySignature } from "../src/webhook.js";
+import {
+  fastFailureResultFromEvent,
+  pullRequestRefFromEvent,
+  shouldIgnoreEvent,
+  verifySignature,
+} from "../src/webhook.js";
 
 const repository = { owner: { login: "connfy" }, name: "ai-trading-bot" };
 const installation = { id: 42 };
+const config = {
+  botLogins: new Set(["chatgpt-codex-connector[bot]"]),
+  cleanText: "Codex Review: Didn't find any major issues.",
+};
+
+function pullRequestPayload({ action = "opened", draft = false } = {}) {
+  return {
+    action,
+    pull_request: {
+      number: 12,
+      draft,
+      head: { sha: "abc123" },
+    },
+  };
+}
+
+function issueCommentPayload({ user, body, action = "created" } = {}) {
+  return {
+    action,
+    issue: { number: 11, pull_request: { url: "x" } },
+    comment: {
+      user: { login: user },
+      body,
+    },
+  };
+}
 
 test("pull_request event resolves to PR coordinates", () => {
   const ref = pullRequestRefFromEvent("pull_request", {
@@ -57,6 +88,69 @@ test("events without an installation id are ignored", () => {
     pull_request: { number: 7 },
   });
   assert.equal(ref, null);
+});
+
+test("fresh-head pull_request events can fast-fail without full evaluation", () => {
+  const result = fastFailureResultFromEvent(
+    "pull_request",
+    pullRequestPayload({ action: "synchronize" }),
+  );
+  assert.equal(result.state, "failure");
+  assert.equal(result.sha, "abc123");
+  assert.match(result.details[0], /No clean review pass/);
+});
+
+test("draft pull_request events can fast-fail without full evaluation", () => {
+  const result = fastFailureResultFromEvent(
+    "pull_request",
+    pullRequestPayload({ action: "converted_to_draft", draft: true }),
+  );
+  assert.equal(result.state, "failure");
+  assert.match(result.details[0], /draft/);
+});
+
+test("non-fresh non-draft pull_request events still need full evaluation", () => {
+  const result = fastFailureResultFromEvent(
+    "pull_request",
+    pullRequestPayload({ action: "ready_for_review" }),
+  );
+  assert.equal(result, null);
+});
+
+test("user issue comments are ignored as gate signals", () => {
+  const ignored = shouldIgnoreEvent(
+    "issue_comment",
+    issueCommentPayload({ user: "connfy", body: "@codex review" }),
+    config,
+  );
+  assert.equal(ignored, true);
+});
+
+test("configured bot clean issue comments trigger evaluation", () => {
+  const ignored = shouldIgnoreEvent(
+    "issue_comment",
+    issueCommentPayload({
+      user: "chatgpt-codex-connector[bot]",
+      body: "Codex Review: Didn't find any major issues. :tada:",
+    }),
+    config,
+  );
+  assert.equal(ignored, false);
+});
+
+test("configured bot edited or deleted issue comments trigger evaluation", () => {
+  for (const action of ["edited", "deleted"]) {
+    const ignored = shouldIgnoreEvent(
+      "issue_comment",
+      issueCommentPayload({
+        user: "chatgpt-codex-connector[bot]",
+        body: "",
+        action,
+      }),
+      config,
+    );
+    assert.equal(ignored, false);
+  }
 });
 
 test("verifySignature accepts a correct signature and rejects tampering", async () => {

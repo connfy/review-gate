@@ -1,179 +1,243 @@
 # Review Gate
 
-A Cloudflare Worker that reports a required commit status (default
-`review-gate/codex-clean`) from **GitHub App webhooks**, blocking merges until an
-AI/code reviewer has left a clean review and all review threads are resolved.
+Languages: English | [한국어](README.ko.md)
 
-It is reusable: the reviewer bot login(s), the clean-review marker text, and the
-status context are all configurable, so it is not tied to Codex or to any single
-repository. A single GitHub App + single Worker can gate any number of repos.
+> An AI said "this PR looks clean." But can you really hit merge on its word alone?
 
-## Why this exists
+Review Gate is a tiny Cloudflare Worker that removes that awkward moment of
+doubt. When Codex (or any other reviewer bot) decides a PR is clean, it flips a
+GitHub commit status to green. If the PR is still a draft, has unresolved review
+threads, or the latest commit hasn't been reviewed yet, it stays red.
 
-A common approach runs such a gate on a `schedule` cron in GitHub Actions.
-Actions bills each job rounded **up to the whole minute**, so frequent polling
-(e.g. every 5 minutes) burns thousands of billable minutes per month. This Worker
-is purely event-driven:
+In one line: it's the **missing layer between "we asked an AI to review" and
+"okay, this is actually safe to merge."** Your PR gets a status with this name,
+and that status becomes your merge signal:
 
-- One GitHub App is installed on any number of repositories.
-- Every pull-request event is delivered to a single Worker URL.
-- The Worker recomputes the gate for the affected PR and sets the commit status.
-- No cron, no polling, so it stays inside the Cloudflare Workers free tier and
-  consumes zero GitHub Actions minutes.
+`review-gate/codex-clean`
 
-## Gate rule
+Why you'll want it:
 
-The status is `success` only when **all** of the following hold for the PR head SHA:
+- No cron, no polling workflow, no GitHub Actions minutes burned re-checking the
+  same PR. GitHub sends a webhook, the Worker recomputes once, done. It runs for
+  very little.
+- One Worker plus one GitHub App covers dozens of repositories at once.
+- Push a new commit and the status automatically resets to red. No more
+  accidental merges on stale approvals.
+- Use it as a soft signal (soft gate), or wire it into branch protection as a
+  required check to lock the merge button outright (hard enforcement).
+
+## When does it turn green?
+
+For the current PR head SHA, all three of these have to be true before the status
+goes `success`:
 
 - The PR is not a draft.
 - There are no unresolved current review threads.
-- The configured review bot left a clean pass after the latest head update —
-  either an issue comment containing the clean-review marker text posted after the
-  head commit, or a review whose `commit_id` matches the head SHA with that text.
+- A configured reviewer bot left a clean pass after the latest commit.
 
-> A reviewer's 👍-reaction shortcut is intentionally **not** supported. GitHub
-> does not deliver reaction webhooks, so a pure webhook gate cannot observe
-> reactions. Rely on the reviewer's clean review comment instead.
+A "clean pass" counts in either of two forms:
 
-## Configuration
+- the bot left a PR timeline comment containing the clean-review text, or
+- the bot left a PR review (with the clean text) whose `commit_id` matches the
+  current head SHA.
 
-Non-secret settings live in `wrangler.toml` under `[vars]` and can be overridden
-per deployment:
+By default Review Gate trusts these bots,
 
-| Variable | Default | Meaning |
+- `chatgpt-codex-connector`
+- `chatgpt-codex-connector[bot]`
+
+and treats this line as the clean signal:
+
+`Codex Review: Didn't find any major issues.`
+
+Heads up: reviewer thumbs-up reactions are ignored on purpose. GitHub doesn't
+deliver reaction webhooks, so a webhook-only tool can't observe them reliably.
+
+## Setup (quicker than it looks)
+
+Five steps total. Create a GitHub App → convert the key → deploy the Worker →
+connect the App → done.
+
+### 1. Create a GitHub App
+
+In GitHub, create a new GitHub App under your personal account or an organization.
+There's a bit to configure, but just follow the tables below.
+
+Give it these **Repository permissions**:
+
+| Permission | Access | Why it's needed |
 | --- | --- | --- |
-| `STATUS_CONTEXT` | `review-gate/codex-clean` | Commit status context required by branch protection. |
-| `REVIEW_BOT_LOGINS` | `chatgpt-codex-connector,chatgpt-codex-connector[bot]` | Comma-separated bot login(s) whose clean review counts as a pass. |
-| `CLEAN_REVIEW_TEXT` | `Codex Review: Didn't find any major issues.` | Substring that marks a clean review from the bot above. |
+| Commit statuses | Read and write | To write `review-gate/codex-clean` onto the PR head SHA. |
+| Pull requests | Read-only | To read PR state, reviews, inline comments, and review threads. |
+| Issues | Read-only | To receive PR timeline comments. GitHub models PR comments as issue comments internally. |
 
-Secrets are set with `wrangler secret put` and never committed:
+Subscribe it to these five events:
 
-| Secret | Meaning |
-| --- | --- |
-| `GITHUB_APP_ID` | App ID from the GitHub App settings page. |
-| `GITHUB_APP_PRIVATE_KEY` | App private key in PKCS#8 PEM format. |
-| `GITHUB_WEBHOOK_SECRET` | Webhook secret configured on the GitHub App. |
+- Pull request
+- Pull request review
+- Pull request review comment
+- Pull request review thread
+- Issue comment
 
-## Events handled
+Do not skip that last one, **Issue comment**. Codex clean-pass messages usually
+arrive as PR timeline comments, and GitHub sends those as `issue_comment`
+webhooks. Forget it and you'll spend ages wondering "why isn't this working?"
 
-`pull_request`, `pull_request_review`, `pull_request_review_comment`,
-`pull_request_review_thread`, and `issue_comment` (PR comments only).
+The **Webhook URL** doesn't have to be correct yet. Drop in a placeholder like
+`https://example.com/review-gate` and swap in the real one after you deploy the
+Worker.
 
-`pull_request_review_thread` means thread resolution is reflected in real time —
-something the GitHub Actions trigger set could not do.
+Set a strong random **Webhook secret** and copy it somewhere handy. You'll use it
+in the next step.
 
-GitHub App event subscriptions and repository permissions must both be present:
+### 2. Convert the private key
 
-| Event | Required repository permission | Why |
-| --- | --- | --- |
-| Pull request | Pull requests: Read-only | Recompute the gate when PR state or the head commit changes. |
-| Pull request review | Pull requests: Read-only | Recompute when the reviewer submits a PR review body. |
-| Pull request review comment | Pull requests: Read-only | Recompute when inline review comments are created. |
-| Pull request review thread | Pull requests: Read-only | Recompute when review threads are resolved or unresolved. |
-| Issue comment | Issues: Read-only | Recompute when the reviewer leaves the clean pass as a PR timeline comment. |
-
-Do not skip `Issue comment`: GitHub models pull-request timeline comments as
-issue comments. Without both the `Issues: Read-only` permission and the
-`Issue comment` subscription, a clean Codex pass comment can appear on the PR
-without ever triggering the Worker.
-
-## Setup
-
-### 1. Create the GitHub App
-
-Create a GitHub App (org or personal account) with:
-
-- **Repository permissions**
-  - Commit statuses: **Read and write**
-  - Pull requests: **Read-only**
-  - Issues: **Read-only**
-- **Subscribe to events:** Pull request, Pull request review, Pull request review
-  comment, Pull request review thread, Issue comment
-- **Webhook URL:** the deployed Worker URL (fill in after step 3, or use a
-  placeholder and update it).
-- **Webhook secret:** generate a strong random string and keep it.
-
-Generate and download a private key, then convert it to PKCS#8 (Web Crypto
-cannot import GitHub's default PKCS#1 key):
+Download a private key from the GitHub App settings page. The catch: GitHub hands
+you a PKCS#1 PEM, but Cloudflare Workers' Web Crypto wants PKCS#8. So convert it
+once. Copy-paste the command as-is:
 
 ```bash
 openssl pkcs8 -topk8 -inform PEM -outform PEM -nocrypt \
   -in your-app.private-key.pem -out your-app.pkcs8.pem
 ```
 
-Install the App on the repositories you want gated.
+Replace `your-app.private-key.pem` with the file you just downloaded. The
+resulting `your-app.pkcs8.pem` is what you'll use next.
 
-### 2. Configure secrets
+### 3. Deploy the Worker
 
 ```bash
 cd review-gate
 npm install
-npx wrangler secret put GITHUB_APP_ID            # numeric App ID
-npx wrangler secret put GITHUB_WEBHOOK_SECRET     # the webhook secret from step 1
-npx wrangler secret put GITHUB_APP_PRIVATE_KEY    # paste the PKCS#8 PEM contents
-```
-
-### 3. Deploy
-
-```bash
+npx wrangler secret put GITHUB_APP_ID
+npx wrangler secret put GITHUB_WEBHOOK_SECRET
+npx wrangler secret put GITHUB_APP_PRIVATE_KEY
 npx wrangler deploy
 ```
 
-Copy the deployed URL into the GitHub App's Webhook URL field (and re-deliver the
-`ping` event to confirm it returns `200`).
+Each `wrangler secret put` prompts you to paste a value. Fill them in like this:
 
-### 4. Branch protection
+- `GITHUB_APP_ID`: the numeric App ID (it's at the top of the App settings page)
+- `GITHUB_WEBHOOK_SECRET`: the webhook secret from step 1
+- `GITHUB_APP_PRIVATE_KEY`: the full contents of the PKCS#8 PEM from step 2
+  (everything from `-----BEGIN` to `END-----`)
 
-Keep the status context (default `review-gate/codex-clean`) as a required status
-check on your protected branch. Because the context name is configurable and
-stable, no branch protection changes are needed when cutting over from an Actions
-workflow that used the same context — but make sure the App is installed and the
-Worker is live **before** removing the old workflow, otherwise the status is
-simply not reported (PRs stay blocked, which is the safe failure mode).
+After deploy, the Worker URL prints in your terminal. Copy it.
 
-If you add or change GitHub App permissions after installing the App, each
-installation owner must approve the updated permissions. Existing installations
-do not automatically receive newly requested permissions until that approval is
-complete.
+### 4. Connect the Worker to the GitHub App
 
-### Troubleshooting webhook delivery
+Go back to the GitHub App settings and replace the placeholder **Webhook URL**
+with the real Worker URL you just copied.
 
-If a PR has a clean pass comment but the status stays failed:
+To confirm the wiring, redeliver the `ping` event under **Advanced > Recent
+deliveries**. A healthy setup returns `200` with `pong`.
 
-- Confirm the clean comment was created after the latest PR head commit.
-- Confirm all current review threads are resolved.
-- In the GitHub App settings, check **Advanced > Recent deliveries** for an
-  `issue_comment` delivery at the time the clean pass comment was created.
-- If there is no delivery, check that both `Issues: Read-only` and the
-  `Issue comment` event subscription are enabled and approved.
-- If delivery exists but the status is unchanged, inspect the delivery response
-  and Worker logs. `202 Accepted` means the Worker accepted the webhook and any
-  later failure happened during GitHub API re-evaluation or status reporting.
+Finally, install the App on whichever repositories you want to gate. That's it.
 
-## Security notes
+> If you change the App's permissions later, each installation owner has to
+> approve the new permissions before they take effect. Easy to forget, so keep it
+> in mind.
 
-- Security depends on the **secrets**, never on source secrecy. The webhook
-  endpoint is protected by `X-Hub-Signature-256` HMAC verification against
-  `GITHUB_WEBHOOK_SECRET`; the clean-review check only trusts comments authored by
-  the configured bot login(s), which cannot be spoofed by other accounts.
-- Never commit secrets. `.gitignore` excludes `*.pem` and `.dev.vars`. On public
-  repos, enable Push Protection / Secret Scanning, and rotate immediately if a key
-  ever lands in git history.
+### 5. Use it on a real PR
 
-## Local development and tests
+Open a PR or push a new commit, and Review Gate starts reporting a status right
+away. It stays failed until the latest commit has a clean review and all review
+threads are resolved.
 
-```bash
-npm test        # node --test, runs the pure gate + webhook unit tests
-npm run dev     # wrangler dev, local Worker runtime
+If you use Codex, you usually summon a review like this:
+
+```text
+@codex review
 ```
 
-## Files
+Shortly after Codex leaves a clean-pass comment, Review Gate recomputes the PR
+and flips the status to green.
 
-- `src/gate.js` — pure gate evaluation (runtime-agnostic, unit tested).
-- `src/webhook.js` — signature verification and event-to-PR routing.
-- `src/github.js` — GitHub App auth (JWT + installation token) and API calls.
-- `src/index.js` — Worker `fetch` handler that ties it together.
-- `test/` — `node --test` unit tests.
+## Soft gate, or lock it down?
+
+Out of the box, Review Gate only *reports* a status. Often that's plenty: tell
+your people (and AI agents) "if `review-gate/codex-clean` isn't green, don't
+merge." That's the soft gate.
+
+Want GitHub itself to disable the merge button? Add `review-gate/codex-clean` as a
+required status check in branch protection or a repository ruleset for the
+protected branch. That's hard enforcement.
+
+Note that this App deliberately does not ask for heavy permissions like
+`Administration: write` just to create rulesets for you. Not holding that
+permission makes it much easier — and safer — to install.
+
+## Configuration
+
+Non-secret settings live in `wrangler.toml`. Tweak them here if you want to use a
+different reviewer bot or change the trigger text.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `STATUS_CONTEXT` | `review-gate/codex-clean` | The commit status name to write. |
+| `REVIEW_BOT_LOGINS` | `chatgpt-codex-connector,chatgpt-codex-connector[bot]` | Bot logins whose clean pass counts (comma-separated). |
+| `CLEAN_REVIEW_TEXT` | `Codex Review: Didn't find any major issues.` | Text that marks a clean review pass. |
+
+Secrets are stored separately in Cloudflare via `wrangler secret put`:
+
+| Secret | Meaning |
+| --- | --- |
+| `GITHUB_APP_ID` | The numeric GitHub App ID. |
+| `GITHUB_APP_PRIVATE_KEY` | The private key converted to PKCS#8 PEM. |
+| `GITHUB_WEBHOOK_SECRET` | The webhook secret set on the GitHub App. |
+
+## When things go wrong (troubleshooting)
+
+### The status never shows up
+
+- Is the App actually installed on that repository?
+- Is the Worker URL saved as the GitHub App's webhook URL?
+- Does redelivering the `ping` event return `200 pong`?
+- Still stuck? Check the Cloudflare Worker logs for signature or GitHub API
+  errors.
+
+### Codex says clean, but the status stays failed
+
+- Was the clean-pass comment posted *after* the latest head commit? Anything
+  before it doesn't count.
+- Are there still unresolved review threads?
+- Under **Advanced > Recent deliveries** in the App settings, is there an
+  `issue_comment` delivery at the time of that comment?
+- If there's no delivery, double-check both the `Issues: Read-only` permission and
+  the `Issue comment` event subscription. (This is the most common culprit.)
+- If the delivery exists and returns `202 Accepted`, the webhook was received
+  fine — so the problem is later, during PR re-evaluation or status reporting.
+  Check the Worker logs.
+
+### The status is failed but GitHub still lets you merge
+
+That means the status isn't a required check yet. Either treat it as a soft
+"failed means don't merge" rule, or add `review-gate/codex-clean` as a required
+status check to let GitHub block the merge for you.
+
+## Want to hack on it? (local development)
+
+```bash
+npm test
+npm run dev
+```
+
+Files worth knowing when you poke around:
+
+- `src/gate.js` - the gate decision logic (pure functions, easy to read).
+- `src/webhook.js` - signature verification, event routing, webhook fast paths.
+- `src/github.js` - GitHub App auth, installation token caching, GitHub API calls.
+- `src/index.js` - the Cloudflare Worker entrypoint.
+- `test/` - `node --test` unit tests.
+
+## A word on security
+
+- Security comes from guarding your secrets, not from hiding the source.
+- Webhooks are verified with `X-Hub-Signature-256` and `GITHUB_WEBHOOK_SECRET`.
+- A clean pass only counts when authored by a configured bot login — nobody can
+  sneak through by just copying the magic text.
+- Never commit private keys or `.dev.vars`. If a secret ever lands in git history,
+  rotate it immediately.
 
 ## License
 
