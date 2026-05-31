@@ -4,6 +4,10 @@
 const API_ROOT = "https://api.github.com";
 const API_VERSION = "2022-11-28";
 const USER_AGENT = "review-gate";
+const TOKEN_REFRESH_SKEW_MS = 60_000;
+
+let privateKeyCache = null;
+const installationTokenCache = new Map();
 
 function base64UrlEncode(bytes) {
   let binary = "";
@@ -26,6 +30,21 @@ function pemToArrayBuffer(pem) {
   return buffer.buffer;
 }
 
+async function importPrivateKey(privateKeyPem) {
+  if (privateKeyCache?.pem === privateKeyPem) {
+    return privateKeyCache.key;
+  }
+  const key = await crypto.subtle.importKey(
+    "pkcs8",
+    pemToArrayBuffer(privateKeyPem),
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  privateKeyCache = { pem: privateKeyPem, key };
+  return key;
+}
+
 // Builds a short-lived App JWT (RS256). The private key must be PKCS#8 PEM.
 export async function createAppJwt(appId, privateKeyPem) {
   const now = Math.floor(Date.now() / 1000);
@@ -38,13 +57,7 @@ export async function createAppJwt(appId, privateKeyPem) {
     "." +
     base64UrlEncode(encoder.encode(JSON.stringify(payload)));
 
-  const key = await crypto.subtle.importKey(
-    "pkcs8",
-    pemToArrayBuffer(privateKeyPem),
-    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
+  const key = await importPrivateKey(privateKeyPem);
   const signature = await crypto.subtle.sign(
     "RSASSA-PKCS1-v1_5",
     key,
@@ -99,13 +112,42 @@ async function githubPaginate(token, path, { accept } = {}) {
   }
 }
 
-export async function getInstallationToken(jwt, installationId) {
-  const data = await githubFetch(
+async function requestInstallationToken(jwt, installationId) {
+  return githubFetch(
     jwt,
     "POST",
     `/app/installations/${installationId}/access_tokens`,
     { body: {} },
   );
+}
+
+export async function getInstallationToken(jwt, installationId) {
+  const data = await requestInstallationToken(jwt, installationId);
+  return data.token;
+}
+
+export async function getCachedInstallationToken(
+  appId,
+  privateKeyPem,
+  installationId,
+) {
+  const cacheKey = `${appId}:${installationId}`;
+  const now = Date.now();
+  const cached = installationTokenCache.get(cacheKey);
+  if (cached && cached.expiresAtMs - TOKEN_REFRESH_SKEW_MS > now) {
+    return cached.token;
+  }
+
+  const jwt = await createAppJwt(appId, privateKeyPem);
+  const data = await requestInstallationToken(jwt, installationId);
+  const parsedExpiresAt = Date.parse(data.expires_at ?? "");
+  const expiresAtMs = Number.isFinite(parsedExpiresAt)
+    ? parsedExpiresAt
+    : now + 55 * 60 * 1000;
+  installationTokenCache.set(cacheKey, {
+    token: data.token,
+    expiresAtMs,
+  });
   return data.token;
 }
 

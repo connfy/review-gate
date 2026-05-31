@@ -1,4 +1,8 @@
-// Pure webhook helpers: signature verification and event routing.
+// Pure webhook helpers: signature verification, event routing, and cheap
+// event-level decisions that avoid full PR re-evaluation when the payload cannot
+// move the gate forward.
+
+import { resolveConfig } from "./gate.js";
 
 const RELEVANT_EVENTS = new Set([
   "pull_request",
@@ -7,6 +11,13 @@ const RELEVANT_EVENTS = new Set([
   "pull_request_review_thread",
   "issue_comment",
 ]);
+
+function loginFor(user) {
+  if (!user || typeof user !== "object") {
+    return "";
+  }
+  return String(user.login ?? "");
+}
 
 function timingSafeEqual(a, b) {
   if (a.length !== b.length) {
@@ -78,4 +89,29 @@ export function pullRequestRefFromEvent(eventName, payload) {
     prNumber: Number(prNumber),
     installationId: Number(installationId),
   };
+}
+
+export function shouldIgnoreEvent(eventName, payload, config) {
+  if (eventName !== "issue_comment") {
+    return false;
+  }
+  if (!payload?.issue?.pull_request) {
+    return true;
+  }
+
+  const { cleanText, botLogins } = resolveConfig(config);
+  const author = loginFor(payload?.comment?.user);
+  if (!botLogins.has(author)) {
+    return true;
+  }
+
+  const action = String(payload?.action ?? "");
+  const body = String(payload?.comment?.body ?? "");
+  if (action === "created") {
+    return !body.includes(cleanText);
+  }
+
+  // A clean-pass comment should not normally be edited or deleted, but if the
+  // configured bot does change one, re-evaluate instead of trusting stale state.
+  return action !== "edited" && action !== "deleted";
 }

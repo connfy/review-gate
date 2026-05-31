@@ -5,8 +5,12 @@
 // configured commit status on the head SHA. No polling, no cron.
 
 import { evaluateGate, resolveConfig } from "./gate.js";
-import { createAppJwt, getInstallationToken, RepoClient } from "./github.js";
-import { pullRequestRefFromEvent, verifySignature } from "./webhook.js";
+import { getCachedInstallationToken, RepoClient } from "./github.js";
+import {
+  pullRequestRefFromEvent,
+  shouldIgnoreEvent,
+  verifySignature,
+} from "./webhook.js";
 
 function configFromEnv(env) {
   const botLogins = env.REVIEW_BOT_LOGINS
@@ -20,10 +24,25 @@ function configFromEnv(env) {
 }
 
 async function evaluateAndReport(env, ref, config) {
-  const jwt = await createAppJwt(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
-  const token = await getInstallationToken(jwt, ref.installationId);
+  const token = await getCachedInstallationToken(
+    env.GITHUB_APP_ID,
+    env.GITHUB_APP_PRIVATE_KEY,
+    ref.installationId,
+  );
   const client = new RepoClient(token, ref.owner, ref.repo, config.statusContext);
 
+  const result = await evaluateFromGitHub(client, ref, config);
+
+  await client.setStatus(result.sha, {
+    state: result.state,
+    description: result.description,
+    targetUrl: undefined,
+  });
+
+  return result;
+}
+
+async function evaluateFromGitHub(client, ref, config) {
   const pr = await client.pullRequest(ref.prNumber);
   const [issueComments, reviews, reviewThreads, timelineEvents] =
     await Promise.all([
@@ -33,7 +52,7 @@ async function evaluateAndReport(env, ref, config) {
       client.timelineEvents(ref.prNumber),
     ]);
 
-  const result = evaluateGate({
+  return evaluateGate({
     pr,
     issueComments,
     reviews,
@@ -41,14 +60,6 @@ async function evaluateAndReport(env, ref, config) {
     timelineEvents,
     config,
   });
-
-  await client.setStatus(result.sha, {
-    state: result.state,
-    description: result.description,
-    targetUrl: undefined,
-  });
-
-  return result;
 }
 
 export default {
@@ -86,6 +97,9 @@ export default {
     }
 
     const config = configFromEnv(env);
+    if (shouldIgnoreEvent(eventName, payload, config)) {
+      return new Response("Ignored", { status: 202 });
+    }
 
     // Do the GitHub round-trips after responding so the webhook delivery is
     // acknowledged promptly even if the API calls take a moment.
