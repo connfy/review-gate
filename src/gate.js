@@ -64,6 +64,103 @@ function issueCommentIdsAfterHead(timelineEvents, sha) {
   return commentIds;
 }
 
+export function extractReviewedCommitPrefix(body) {
+  const match = String(body ?? "").match(
+    /\*\*Reviewed commit:\*\*\s*`([0-9a-f]+)`/i,
+  );
+  return match?.[1] ?? null;
+}
+
+function shaMatchesPrefix(fullSha, prefix) {
+  if (!prefix) {
+    return false;
+  }
+  return String(fullSha).toLowerCase().startsWith(String(prefix).toLowerCase());
+}
+
+function issueCommentQualifies(comment, sha, timelineEvents, config) {
+  const { cleanText, botLogins } = resolveConfig(config);
+  const author = loginFor(comment?.user);
+  const body = String(comment?.body ?? "");
+  if (!botLogins.has(author) || !body.includes(cleanText)) {
+    return false;
+  }
+
+  const reviewedPrefix = extractReviewedCommitPrefix(body);
+  if (reviewedPrefix) {
+    return shaMatchesPrefix(sha, reviewedPrefix);
+  }
+
+  const idsAfterHead = issueCommentIdsAfterHead(timelineEvents, sha);
+  return idsAfterHead.has(Number(comment?.id));
+}
+
+function cleanCommentsFromTimeline(timelineEvents, sha, config) {
+  const boundaryIndex = latestHeadBoundaryIndex(timelineEvents, sha);
+  if (boundaryIndex === null) {
+    return [];
+  }
+
+  const { cleanText, botLogins } = resolveConfig(config);
+  const cleanEvents = [];
+  for (const event of timelineEvents.slice(boundaryIndex + 1)) {
+    if (event?.event !== "commented") {
+      continue;
+    }
+    const author = loginFor(event?.user ?? event?.actor);
+    const body = String(event?.body ?? "");
+    if (!botLogins.has(author) || !body.includes(cleanText)) {
+      continue;
+    }
+    const reviewedPrefix = extractReviewedCommitPrefix(body);
+    if (reviewedPrefix && !shaMatchesPrefix(sha, reviewedPrefix)) {
+      continue;
+    }
+    cleanEvents.push(
+      `clean review comment at ${event?.created_at ?? "unknown"}`,
+    );
+  }
+  return cleanEvents;
+}
+
+function findStaleCleanReview({ sha, issueComments, timelineEvents, config }) {
+  const { cleanText, botLogins } = resolveConfig(config);
+  for (const comment of issueComments) {
+    const author = loginFor(comment?.user);
+    const body = String(comment?.body ?? "");
+    if (!botLogins.has(author) || !body.includes(cleanText)) {
+      continue;
+    }
+    if (issueCommentQualifies(comment, sha, timelineEvents, config)) {
+      continue;
+    }
+
+    const reviewedPrefix = extractReviewedCommitPrefix(body);
+    if (reviewedPrefix && !shaMatchesPrefix(sha, reviewedPrefix)) {
+      return `Codex reviewed ${reviewedPrefix}, but head is now ${String(sha).slice(0, 12)}. Re-request @codex review.`;
+    }
+
+    const boundaryIndex = latestHeadBoundaryIndex(timelineEvents, sha);
+    const commentIndex = timelineEvents.findIndex(
+      (event) =>
+        event?.event === "commented" &&
+        Number(event?.id) === Number(comment?.id),
+    );
+    if (
+      boundaryIndex !== null &&
+      commentIndex >= 0 &&
+      commentIndex <= boundaryIndex
+    ) {
+      return "Codex clean review is stale: a newer commit landed after the review. Re-request @codex review.";
+    }
+  }
+  return null;
+}
+
+export function summarizeFailureDetails(details) {
+  return details[0]?.slice(0, 140) ?? "A clean review is required before merge.";
+}
+
 export function codexCleanEvents({
   sha,
   issueComments,
@@ -72,18 +169,10 @@ export function codexCleanEvents({
   config,
 }) {
   const { cleanText, botLogins } = resolveConfig(config);
-  const idsAfterHead = issueCommentIdsAfterHead(timelineEvents, sha);
-  const cleanEvents = [];
+  const cleanEvents = cleanCommentsFromTimeline(timelineEvents, sha, config);
 
   for (const comment of issueComments) {
-    const author = loginFor(comment?.user);
-    const body = String(comment?.body ?? "");
-    const commentId = Number(comment?.id);
-    if (
-      botLogins.has(author) &&
-      body.includes(cleanText) &&
-      idsAfterHead.has(commentId)
-    ) {
+    if (issueCommentQualifies(comment, sha, timelineEvents, config)) {
       cleanEvents.push(`clean review comment at ${comment?.created_at}`);
     }
   }
@@ -141,8 +230,15 @@ export function evaluateGate({
     config: resolved,
   });
   if (cleanEvents.length === 0) {
+    const staleReview = findStaleCleanReview({
+      sha,
+      issueComments,
+      timelineEvents,
+      config: resolved,
+    });
     details.push(
-      "No clean review pass after the latest head update. Need a clean review comment.",
+      staleReview ??
+        "No clean review pass after the latest head update. Need a clean review comment.",
     );
   }
 
@@ -151,7 +247,7 @@ export function evaluateGate({
       prNumber,
       sha,
       state: "failure",
-      description: "A clean review is required before merge.",
+      description: summarizeFailureDetails(details),
       details,
     };
   }

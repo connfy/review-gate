@@ -86,7 +86,7 @@ test("clean comment before latest head does not pass", () => {
     timelineEvents: timelineBeforeHead([1]),
   });
   assert.equal(result.state, "failure");
-  assert.match(result.details[0], /No clean review pass/);
+  assert.match(result.details[0], /stale|No clean review pass/);
 });
 
 test("clean comment before force-push boundary does not pass", () => {
@@ -107,7 +107,7 @@ test("clean comment before force-push boundary does not pass", () => {
     ],
   });
   assert.equal(result.state, "failure");
-  assert.match(result.details[0], /No clean review pass/);
+  assert.match(result.details[0], /stale|No clean review pass/);
 });
 
 test("pending review without submitted timestamp is ignored", () => {
@@ -194,4 +194,130 @@ test("custom bot login and clean text are honoured", () => {
     },
   });
   assert.equal(result.state, "success");
+});
+
+test("clean comment passes when Reviewed commit matches head but timeline lags", () => {
+  const result = evaluateGate({
+    pr: pr(),
+    issueComments: [
+      {
+        id: 999,
+        user: { login: "chatgpt-codex-connector[bot]" },
+        body:
+          "Codex Review: Didn't find any major issues.\n\n**Reviewed commit:** `abc123`",
+        created_at: "2026-05-28T00:02:00Z",
+      },
+    ],
+    timelineEvents: [
+      {
+        event: "committed",
+        sha: "abc123",
+        author: { date: "2026-05-28T00:00:00Z" },
+      },
+    ],
+  });
+  assert.equal(result.state, "success");
+});
+
+test("comment after head boundary but reviewed commit mismatch does not pass", () => {
+  const result = evaluateGate({
+    pr: { number: 123, draft: false, head: { sha: "newhead1234567890abcd" } },
+    issueComments: [
+      {
+        id: 2,
+        user: { login: "chatgpt-codex-connector[bot]" },
+        body:
+          "Codex Review: Didn't find any major issues.\n\n**Reviewed commit:** `46002bce95`",
+        created_at: "2026-05-28T00:06:00Z",
+      },
+    ],
+    timelineEvents: [
+      {
+        event: "committed",
+        sha: "newhead1234567890abcd",
+        author: { date: "2026-05-28T00:05:00Z" },
+      },
+      {
+        event: "commented",
+        id: 2,
+        user: { login: "chatgpt-codex-connector[bot]" },
+        body:
+          "Codex Review: Didn't find any major issues.\n\n**Reviewed commit:** `46002bce95`",
+        created_at: "2026-05-28T00:06:00Z",
+      },
+    ],
+  });
+  assert.equal(result.state, "failure");
+  assert.match(result.description, /Codex reviewed 46002bce95/);
+});
+
+test("clean comment without timeline event or reviewed commit does not pass", () => {
+  const result = evaluateGate({
+    pr: pr(),
+    issueComments: [
+      {
+        id: 999,
+        user: { login: "chatgpt-codex-connector[bot]" },
+        body: "Codex Review: Didn't find any major issues.",
+        created_at: "2026-05-28T00:02:00Z",
+      },
+    ],
+    timelineEvents: [
+      {
+        event: "committed",
+        sha: "abc123",
+        author: { date: "2026-05-28T00:00:00Z" },
+      },
+    ],
+  });
+  assert.equal(result.state, "failure");
+  assert.match(result.details[0], /No clean review pass/);
+});
+
+test("stale clean review explains newer head commit", () => {
+  const result = evaluateGate({
+    pr: { number: 123, draft: false, head: { sha: "abc123def4567890abcd" } },
+    issueComments: [
+      {
+        id: 1,
+        user: { login: "chatgpt-codex-connector[bot]" },
+        body:
+          "Codex Review: Didn't find any major issues.\n\n**Reviewed commit:** `46002bce95`",
+        created_at: "2026-05-28T00:06:00Z",
+      },
+    ],
+    timelineEvents: [
+      {
+        event: "committed",
+        sha: "abc123def4567890abcd",
+        author: { date: "2026-05-28T00:05:00Z" },
+      },
+    ],
+  });
+  assert.equal(result.state, "failure");
+  assert.match(result.description, /Codex reviewed 46002bce95/);
+});
+
+test("stale clean review before latest commit gets an explicit message", () => {
+  const result = evaluateGate({
+    pr: pr(),
+    issueComments: [
+      {
+        id: 1,
+        user: { login: "chatgpt-codex-connector[bot]" },
+        body: "Codex Review: Didn't find any major issues.",
+        created_at: "2026-05-28T00:01:00Z",
+      },
+    ],
+    timelineEvents: [
+      { event: "commented", id: 1 },
+      {
+        event: "committed",
+        sha: "abc123",
+        author: { date: "2026-05-28T00:05:00Z" },
+      },
+    ],
+  });
+  assert.equal(result.state, "failure");
+  assert.match(result.description, /stale/i);
 });
