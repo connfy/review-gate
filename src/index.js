@@ -23,7 +23,7 @@ function configFromEnv(env) {
   });
 }
 
-async function evaluateAndReport(env, ref, config) {
+async function evaluateAndReport(env, ref, config, options = {}) {
   const token = await getCachedInstallationToken(
     env.GITHUB_APP_ID,
     env.GITHUB_APP_PRIVATE_KEY,
@@ -31,7 +31,16 @@ async function evaluateAndReport(env, ref, config) {
   );
   const client = new RepoClient(token, ref.owner, ref.repo, config.statusContext);
 
-  const result = await evaluateFromGitHub(client, ref, config);
+  let result = await evaluateFromGitHub(client, ref, config);
+
+  if (
+    options.retryOnMissingCleanPass &&
+    result.state === "failure" &&
+    result.details.some((detail) => detail.includes("No clean review pass"))
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    result = await evaluateFromGitHub(client, ref, config);
+  }
 
   await client.setStatus(result.sha, {
     state: result.state,
@@ -97,14 +106,20 @@ export default {
     }
 
     const config = configFromEnv(env);
-    if (shouldIgnoreEvent(eventName, payload, config)) {
+    const ignoreEvent = shouldIgnoreEvent(eventName, payload, config);
+    if (ignoreEvent) {
       return new Response("Ignored", { status: 202 });
     }
+
+    const retryOnMissingCleanPass =
+      eventName === "issue_comment" &&
+      String(payload?.action ?? "") === "created" &&
+      String(payload?.comment?.body ?? "").includes(config.cleanText);
 
     // Do the GitHub round-trips after responding so the webhook delivery is
     // acknowledged promptly even if the API calls take a moment.
     ctx.waitUntil(
-      evaluateAndReport(env, ref, config).catch((error) => {
+      evaluateAndReport(env, ref, config, { retryOnMissingCleanPass }).catch((error) => {
         console.error(
           `gate evaluation failed for ${ref.owner}/${ref.repo}#${ref.prNumber}:`,
           error,
