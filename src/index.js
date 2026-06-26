@@ -33,11 +33,7 @@ async function evaluateAndReport(env, ref, config, options = {}) {
 
   let result = await evaluateFromGitHub(client, ref, config);
 
-  if (
-    options.retryOnMissingCleanPass &&
-    result.state === "failure" &&
-    result.details.some((detail) => detail.includes("No clean review pass"))
-  ) {
+  if (options.retryOnCleanComment && result.state === "failure") {
     await new Promise((resolve) => setTimeout(resolve, 3_000));
     result = await evaluateFromGitHub(client, ref, config);
   }
@@ -111,7 +107,7 @@ export default {
       return new Response("Ignored", { status: 202 });
     }
 
-    const retryOnMissingCleanPass =
+    const retryOnCleanComment =
       eventName === "issue_comment" &&
       String(payload?.action ?? "") === "created" &&
       String(payload?.comment?.body ?? "").includes(config.cleanText);
@@ -119,7 +115,7 @@ export default {
     // Do the GitHub round-trips after responding so the webhook delivery is
     // acknowledged promptly even if the API calls take a moment.
     ctx.waitUntil(
-      evaluateAndReport(env, ref, config, { retryOnMissingCleanPass }).catch((error) => {
+      evaluateAndReport(env, ref, config, { retryOnCleanComment }).catch((error) => {
         console.error(
           `gate evaluation failed for ${ref.owner}/${ref.repo}#${ref.prNumber}:`,
           error,

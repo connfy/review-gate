@@ -78,38 +78,6 @@ function shaMatchesPrefix(fullSha, prefix) {
   return String(fullSha).toLowerCase().startsWith(String(prefix).toLowerCase());
 }
 
-function headCommitTimestamp(timelineEvents, sha) {
-  for (let index = timelineEvents.length - 1; index >= 0; index -= 1) {
-    const event = timelineEvents[index];
-    if (event?.event === "committed" && String(event?.sha ?? "") === sha) {
-      return event?.author?.date ?? event?.created_at ?? null;
-    }
-  }
-  return null;
-}
-
-function isCommentAfterHeadByTimestamp(comment, sha, timelineEvents) {
-  const headTime = headCommitTimestamp(timelineEvents, sha);
-  const commentTime = comment?.created_at;
-  if (!headTime || !commentTime) {
-    return false;
-  }
-  if (Date.parse(commentTime) <= Date.parse(headTime)) {
-    return false;
-  }
-
-  const commentIndex = timelineEvents.findIndex(
-    (event) =>
-      event?.event === "commented" && Number(event?.id) === Number(comment?.id),
-  );
-  if (commentIndex < 0) {
-    return true;
-  }
-
-  const boundaryIndex = latestHeadBoundaryIndex(timelineEvents, sha);
-  return boundaryIndex !== null && commentIndex > boundaryIndex;
-}
-
 function issueCommentQualifies(comment, sha, timelineEvents, config) {
   const { cleanText, botLogins } = resolveConfig(config);
   const author = loginFor(comment?.user);
@@ -118,17 +86,13 @@ function issueCommentQualifies(comment, sha, timelineEvents, config) {
     return false;
   }
 
-  const idsAfterHead = issueCommentIdsAfterHead(timelineEvents, sha);
-  if (idsAfterHead.has(Number(comment?.id))) {
-    return true;
-  }
-
   const reviewedPrefix = extractReviewedCommitPrefix(body);
   if (reviewedPrefix) {
     return shaMatchesPrefix(sha, reviewedPrefix);
   }
 
-  return isCommentAfterHeadByTimestamp(comment, sha, timelineEvents);
+  const idsAfterHead = issueCommentIdsAfterHead(timelineEvents, sha);
+  return idsAfterHead.has(Number(comment?.id));
 }
 
 function cleanCommentsFromTimeline(timelineEvents, sha, config) {
@@ -176,11 +140,16 @@ function findStaleCleanReview({ sha, issueComments, timelineEvents, config }) {
       return `Codex reviewed ${reviewedPrefix}, but head is now ${String(sha).slice(0, 12)}. Re-request @codex review.`;
     }
 
-    const headTime = headCommitTimestamp(timelineEvents, sha);
+    const boundaryIndex = latestHeadBoundaryIndex(timelineEvents, sha);
+    const commentIndex = timelineEvents.findIndex(
+      (event) =>
+        event?.event === "commented" &&
+        Number(event?.id) === Number(comment?.id),
+    );
     if (
-      headTime &&
-      comment?.created_at &&
-      Date.parse(comment.created_at) < Date.parse(headTime)
+      boundaryIndex !== null &&
+      commentIndex >= 0 &&
+      commentIndex <= boundaryIndex
     ) {
       return "Codex clean review is stale: a newer commit landed after the review. Re-request @codex review.";
     }

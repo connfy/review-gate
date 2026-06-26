@@ -86,7 +86,7 @@ test("clean comment before latest head does not pass", () => {
     timelineEvents: timelineBeforeHead([1]),
   });
   assert.equal(result.state, "failure");
-  assert.match(result.details[0], /No clean review pass/);
+  assert.match(result.details[0], /stale|No clean review pass/);
 });
 
 test("clean comment before force-push boundary does not pass", () => {
@@ -107,7 +107,7 @@ test("clean comment before force-push boundary does not pass", () => {
     ],
   });
   assert.equal(result.state, "failure");
-  assert.match(result.details[0], /No clean review pass/);
+  assert.match(result.details[0], /stale|No clean review pass/);
 });
 
 test("pending review without submitted timestamp is ignored", () => {
@@ -219,7 +219,39 @@ test("clean comment passes when Reviewed commit matches head but timeline lags",
   assert.equal(result.state, "success");
 });
 
-test("clean comment passes from timestamp when timeline commented event is missing", () => {
+test("comment after head boundary but reviewed commit mismatch does not pass", () => {
+  const result = evaluateGate({
+    pr: { number: 123, draft: false, head: { sha: "newhead1234567890abcd" } },
+    issueComments: [
+      {
+        id: 2,
+        user: { login: "chatgpt-codex-connector[bot]" },
+        body:
+          "Codex Review: Didn't find any major issues.\n\n**Reviewed commit:** `46002bce95`",
+        created_at: "2026-05-28T00:06:00Z",
+      },
+    ],
+    timelineEvents: [
+      {
+        event: "committed",
+        sha: "newhead1234567890abcd",
+        author: { date: "2026-05-28T00:05:00Z" },
+      },
+      {
+        event: "commented",
+        id: 2,
+        user: { login: "chatgpt-codex-connector[bot]" },
+        body:
+          "Codex Review: Didn't find any major issues.\n\n**Reviewed commit:** `46002bce95`",
+        created_at: "2026-05-28T00:06:00Z",
+      },
+    ],
+  });
+  assert.equal(result.state, "failure");
+  assert.match(result.description, /Codex reviewed 46002bce95/);
+});
+
+test("clean comment without timeline event or reviewed commit does not pass", () => {
   const result = evaluateGate({
     pr: pr(),
     issueComments: [
@@ -238,7 +270,8 @@ test("clean comment passes from timestamp when timeline commented event is missi
       },
     ],
   });
-  assert.equal(result.state, "success");
+  assert.equal(result.state, "failure");
+  assert.match(result.details[0], /No clean review pass/);
 });
 
 test("stale clean review explains newer head commit", () => {
