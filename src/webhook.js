@@ -19,6 +19,14 @@ function loginFor(user) {
   return String(user.login ?? "");
 }
 
+function includesText(body, text) {
+  const needle = String(text ?? "");
+  if (needle.length === 0) {
+    return false;
+  }
+  return String(body ?? "").toLowerCase().includes(needle.toLowerCase());
+}
+
 function timingSafeEqual(a, b) {
   if (a.length !== b.length) {
     return false;
@@ -99,14 +107,14 @@ export function shouldIgnoreEvent(eventName, payload, config) {
     return true;
   }
 
-  const { cleanText, botLogins } = resolveConfig(config);
+  const { cleanText, botLogins, reviewRequestText } = resolveConfig(config);
   const author = loginFor(payload?.comment?.user);
-  if (!botLogins.has(author)) {
-    return true;
-  }
-
   const action = String(payload?.action ?? "");
   const body = String(payload?.comment?.body ?? "");
+  if (!botLogins.has(author)) {
+    return !includesText(body, reviewRequestText);
+  }
+
   if (action === "created") {
     return !body.includes(cleanText);
   }

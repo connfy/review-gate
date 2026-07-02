@@ -35,23 +35,26 @@ goes `success`:
 - There are no unresolved current review threads.
 - A configured reviewer bot left a clean pass after the latest commit.
 
-A "clean pass" counts in either of two forms:
+A "clean pass" counts in any of three forms:
 
 - the bot left a PR timeline comment containing the clean-review text, or
 - the bot left a PR review (with the clean text) whose `commit_id` matches the
-  current head SHA.
+  current head SHA, or
+- the bot left a `+1` reaction on the PR body after the latest head update and
+  latest review request.
 
 By default Review Gate trusts these bots,
 
 - `chatgpt-codex-connector`
 - `chatgpt-codex-connector[bot]`
 
-and treats this line as the clean signal:
+and treats this line plus a PR-body `+1` as clean signals:
 
 `Codex Review: Didn't find any major issues.`
 
-Heads up: reviewer thumbs-up reactions are ignored on purpose. GitHub doesn't
-deliver reaction webhooks, so a webhook-only tool can't observe them reliably.
+Heads up: GitHub exposes PR body reactions through the issue reactions API, not
+as a standalone reaction webhook. Review Gate reads them whenever another PR,
+review, or issue-comment webhook causes the PR to be re-evaluated.
 
 ## Setup (quicker than it looks)
 
@@ -69,7 +72,7 @@ Give it these **Repository permissions**:
 | --- | --- | --- |
 | Commit statuses | Read and write | To write `review-gate/codex-clean` onto the PR head SHA. |
 | Pull requests | Read-only | To read PR state, reviews, inline comments, and review threads. |
-| Issues | Read-only | To receive PR timeline comments. GitHub models PR comments as issue comments internally. |
+| Issues | Read-only | To receive PR timeline comments and read PR body reactions. GitHub models PR comments and PR bodies as issues internally. |
 
 Subscribe it to these five events:
 
@@ -150,8 +153,9 @@ If you use Codex, you usually summon a review like this:
 @codex review
 ```
 
-Shortly after Codex leaves a clean-pass comment, Review Gate recomputes the PR
-and flips the status to green.
+Shortly after Codex leaves a clean-pass comment, or after a later webhook causes
+Review Gate to observe Codex's PR body `+1`, the Worker recomputes the PR and
+flips the status to green.
 
 ## Soft gate, or lock it down?
 
@@ -177,6 +181,8 @@ different reviewer bot or change the trigger text.
 | `STATUS_CONTEXT` | `review-gate/codex-clean` | The commit status name to write. |
 | `REVIEW_BOT_LOGINS` | `chatgpt-codex-connector,chatgpt-codex-connector[bot]` | Bot logins whose clean pass counts (comma-separated). |
 | `CLEAN_REVIEW_TEXT` | `Codex Review: Didn't find any major issues.` | Text that marks a clean review pass. |
+| `CLEAN_REACTION_CONTENT` | `+1` | PR body reaction that marks a clean review pass. |
+| `REVIEW_REQUEST_TEXT` | `@codex review` | Comment text that marks the latest review request boundary for reaction freshness. |
 
 Secrets are stored separately in Cloudflare via `wrangler secret put`:
 
@@ -200,6 +206,8 @@ Secrets are stored separately in Cloudflare via `wrangler secret put`:
 
 - Was the clean-pass comment posted *after* the latest head commit? Anything
   before it doesn't count.
+- If you rely on the PR body `+1`, was the reaction created after both the latest
+  head update and the latest `@codex review` request?
 - Are there still unresolved review threads?
 - Under **Advanced > Recent deliveries** in the App settings, is there an
   `issue_comment` delivery at the time of that comment?

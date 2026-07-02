@@ -14,10 +14,14 @@ import {
 
 function configFromEnv(env) {
   const botLogins = env.REVIEW_BOT_LOGINS
-    ? env.REVIEW_BOT_LOGINS.split(",").map((value) => value.trim()).filter(Boolean)
+    ? env.REVIEW_BOT_LOGINS.split(",")
+        .map((value) => value.trim())
+        .filter(Boolean)
     : undefined;
   return resolveConfig({
     cleanText: env.CLEAN_REVIEW_TEXT,
+    cleanReactionContent: env.CLEAN_REACTION_CONTENT,
+    reviewRequestText: env.REVIEW_REQUEST_TEXT,
     statusContext: env.STATUS_CONTEXT,
     botLogins,
   });
@@ -49,17 +53,24 @@ async function evaluateAndReport(env, ref, config, options = {}) {
 
 async function evaluateFromGitHub(client, ref, config) {
   const pr = await client.pullRequest(ref.prNumber);
-  const [issueComments, reviews, reviewThreads, timelineEvents] =
-    await Promise.all([
-      client.issueComments(ref.prNumber),
-      client.reviews(ref.prNumber),
-      client.reviewThreads(ref.prNumber),
-      client.timelineEvents(ref.prNumber),
-    ]);
+  const [
+    issueComments,
+    issueReactions,
+    reviews,
+    reviewThreads,
+    timelineEvents,
+  ] = await Promise.all([
+    client.issueComments(ref.prNumber),
+    client.issueReactions(ref.prNumber, config.cleanReactionContent),
+    client.reviews(ref.prNumber),
+    client.reviewThreads(ref.prNumber),
+    client.timelineEvents(ref.prNumber),
+  ]);
 
   return evaluateGate({
     pr,
     issueComments,
+    issueReactions,
     reviews,
     reviewThreads,
     timelineEvents,
@@ -115,12 +126,14 @@ export default {
     // Do the GitHub round-trips after responding so the webhook delivery is
     // acknowledged promptly even if the API calls take a moment.
     ctx.waitUntil(
-      evaluateAndReport(env, ref, config, { retryOnCleanComment }).catch((error) => {
-        console.error(
-          `gate evaluation failed for ${ref.owner}/${ref.repo}#${ref.prNumber}:`,
-          error,
-        );
-      }),
+      evaluateAndReport(env, ref, config, { retryOnCleanComment }).catch(
+        (error) => {
+          console.error(
+            `gate evaluation failed for ${ref.owner}/${ref.repo}#${ref.prNumber}:`,
+            error,
+          );
+        },
+      ),
     );
 
     return new Response("Accepted", { status: 202 });
