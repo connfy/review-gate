@@ -15,6 +15,8 @@ REVIEW_BOT_LOGINS = "chatgpt-codex-connector,chatgpt-codex-connector[bot]"
 CLEAN_REVIEW_TEXT = "Codex Review: Didn't find any major issues."
 # PR body reaction content that marks a clean review from the bot above.
 CLEAN_REACTION_CONTENT = "+1"
+# Reaction content that means the review bot has started reviewing.
+REVIEW_IN_PROGRESS_REACTION_CONTENT = "eyes"
 # Comment text that marks a new review request/staleness boundary.
 REVIEW_REQUEST_TEXT = "@codex review"
 

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { evaluateGate } from "../src/gate.js";
+import {
+  evaluateGate,
+  REVIEW_IN_PROGRESS_DESCRIPTION,
+} from "../src/gate.js";
 
 function pr({ draft = false } = {}) {
   return { number: 123, draft, head: { sha: "abc123" } };
@@ -61,6 +64,39 @@ test("PR body thumbs-up reaction from review bot after latest head passes", () =
   });
   assert.equal(result.state, "success");
   assert.match(result.details[0], /clean PR body reaction/);
+});
+
+test("PR body eyes reaction from review bot after latest head is pending", () => {
+  const result = evaluateGate({
+    pr: pr(),
+    issueEyesReactions: [
+      {
+        user: { login: "chatgpt-codex-connector[bot]" },
+        content: "eyes",
+        created_at: "2026-05-28T00:02:00Z",
+      },
+    ],
+    timelineEvents: timelineHeadAt("2026-05-28T00:01:00Z"),
+  });
+  assert.equal(result.state, "pending");
+  assert.equal(result.description, REVIEW_IN_PROGRESS_DESCRIPTION);
+  assert.match(result.details[0], /PR body eyes reaction/);
+});
+
+test("PR body eyes reaction before latest head does not go pending", () => {
+  const result = evaluateGate({
+    pr: pr(),
+    issueEyesReactions: [
+      {
+        user: { login: "chatgpt-codex-connector[bot]" },
+        content: "eyes",
+        created_at: "2026-05-28T00:00:00Z",
+      },
+    ],
+    timelineEvents: timelineHeadAt("2026-05-28T00:01:00Z"),
+  });
+  assert.equal(result.state, "failure");
+  assert.match(result.details[0], /No clean review pass/);
 });
 
 test("PR body thumbs-up reaction from a user does not pass", () => {
@@ -126,6 +162,105 @@ test("PR body thumbs-up reaction before latest review request does not pass", ()
   });
   assert.equal(result.state, "failure");
   assert.match(result.description, /latest review request/);
+});
+
+test("review request eyes reaction from review bot is pending", () => {
+  const reviewRequest = {
+    id: 10,
+    user: { login: "connfy" },
+    body: "@codex review",
+    created_at: "2026-05-28T00:02:00Z",
+  };
+  const result = evaluateGate({
+    pr: pr(),
+    issueComments: [reviewRequest],
+    reviewRequestReactions: [
+      {
+        comment: reviewRequest,
+        reactions: [
+          {
+            user: { login: "chatgpt-codex-connector[bot]" },
+            content: "eyes",
+            created_at: "2026-05-28T00:02:15Z",
+          },
+        ],
+      },
+    ],
+    timelineEvents: [
+      ...timelineHeadAt("2026-05-28T00:01:00Z"),
+      {
+        event: "commented",
+        id: 10,
+        user: { login: "connfy" },
+        body: "@codex review",
+        created_at: "2026-05-28T00:02:00Z",
+      },
+    ],
+  });
+  assert.equal(result.state, "pending");
+  assert.equal(result.description, REVIEW_IN_PROGRESS_DESCRIPTION);
+  assert.match(result.details[0], /review request eyes reaction/);
+});
+
+test("review bot response after eyes stops pending state", () => {
+  const result = evaluateGate({
+    pr: pr(),
+    issueEyesReactions: [
+      {
+        user: { login: "chatgpt-codex-connector[bot]" },
+        content: "eyes",
+        created_at: "2026-05-28T00:02:00Z",
+      },
+    ],
+    reviews: [
+      {
+        user: { login: "chatgpt-codex-connector[bot]" },
+        body: "Codex Review\n\nHere are some automated review suggestions.",
+        submitted_at: "2026-05-28T00:03:00Z",
+        commit_id: "abc123",
+      },
+    ],
+    timelineEvents: timelineHeadAt("2026-05-28T00:01:00Z"),
+  });
+  assert.equal(result.state, "failure");
+  assert.match(result.details[0], /No clean review pass/);
+});
+
+test("review request eyes before latest head does not go pending", () => {
+  const reviewRequest = {
+    id: 10,
+    user: { login: "connfy" },
+    body: "@codex review",
+    created_at: "2026-05-28T00:01:00Z",
+  };
+  const result = evaluateGate({
+    pr: pr(),
+    issueComments: [reviewRequest],
+    reviewRequestReactions: [
+      {
+        comment: reviewRequest,
+        reactions: [
+          {
+            user: { login: "chatgpt-codex-connector[bot]" },
+            content: "eyes",
+            created_at: "2026-05-28T00:03:00Z",
+          },
+        ],
+      },
+    ],
+    timelineEvents: [
+      {
+        event: "commented",
+        id: 10,
+        user: { login: "connfy" },
+        body: "@codex review",
+        created_at: "2026-05-28T00:01:00Z",
+      },
+      ...timelineHeadAt("2026-05-28T00:02:00Z"),
+    ],
+  });
+  assert.equal(result.state, "failure");
+  assert.match(result.details[0], /No clean review pass/);
 });
 
 test("unresolved current thread blocks even with clean comment", () => {
@@ -322,7 +457,7 @@ test("comment after head boundary but reviewed commit mismatch does not pass", (
     ],
   });
   assert.equal(result.state, "failure");
-  assert.match(result.description, /Codex reviewed 46002bce95/);
+  assert.match(result.description, /Review bot reviewed 46002bce95/);
 });
 
 test("clean comment without timeline event or reviewed commit does not pass", () => {
@@ -369,7 +504,7 @@ test("stale clean review explains newer head commit", () => {
     ],
   });
   assert.equal(result.state, "failure");
-  assert.match(result.description, /Codex reviewed 46002bce95/);
+  assert.match(result.description, /Review bot reviewed 46002bce95/);
 });
 
 test("stale clean review before latest commit gets an explicit message", () => {

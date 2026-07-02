@@ -182,6 +182,14 @@ export class RepoClient {
     return githubPaginate(this.token, path);
   }
 
+  issueCommentReactions(commentId, content = "eyes") {
+    const encodedContent = encodeURIComponent(content);
+    const path =
+      `/repos/${this.owner}/${this.repo}/issues/comments/${commentId}/reactions` +
+      `?content=${encodedContent}`;
+    return githubPaginate(this.token, path);
+  }
+
   reviews(prNumber) {
     return githubPaginate(
       this.token,

@@ -6,8 +6,10 @@ Languages: English | [한국어](README.ko.md)
 
 Review Gate is a tiny Cloudflare Worker that removes that awkward moment of
 doubt. When Codex (or any other reviewer bot) decides a PR is clean, it flips a
-GitHub commit status to green. If the PR is still a draft, has unresolved review
-threads, or the latest commit hasn't been reviewed yet, it stays red.
+GitHub commit status to green. If the review bot has acknowledged the latest
+head with an `eyes` reaction, the status stays pending while review is in
+progress. If the PR is still a draft, has unresolved review threads, or the
+latest commit hasn't been reviewed yet, it stays red.
 
 In one line: it's the **missing layer between "we asked an AI to review" and
 "okay, this is actually safe to merge."** Your PR gets a status with this name,
@@ -43,6 +45,12 @@ A "clean pass" counts in any of three forms:
 - the bot left a `+1` reaction on the PR body after the latest head update and
   latest review request.
 
+While the review is running, Review Gate reports `pending` when the configured
+bot leaves an `eyes` reaction on the PR body or on the latest review request
+comment. The status description is deliberately generic:
+
+`Review bot is reviewing the latest head.`
+
 By default Review Gate trusts these bots,
 
 - `chatgpt-codex-connector`
@@ -54,7 +62,9 @@ and treats this line plus a PR-body `+1` as clean signals:
 
 Heads up: GitHub exposes PR body reactions through the issue reactions API, not
 as a standalone reaction webhook. Review Gate reads them whenever another PR,
-review, or issue-comment webhook causes the PR to be re-evaluated.
+review, or issue-comment webhook causes the PR to be re-evaluated. It also does
+one short delayed re-check after PR-open and review-request events so late
+`eyes` reactions can turn the status from red to pending.
 
 ## Setup (quicker than it looks)
 
@@ -153,9 +163,10 @@ If you use Codex, you usually summon a review like this:
 @codex review
 ```
 
-Shortly after Codex leaves a clean-pass comment, or after a later webhook causes
-Review Gate to observe Codex's PR body `+1`, the Worker recomputes the PR and
-flips the status to green.
+Shortly after the bot leaves a clean-pass comment, or after a later webhook
+causes Review Gate to observe the bot's PR body `+1`, the Worker recomputes the
+PR and flips the status to green. If the bot has only acknowledged the review
+with `eyes`, the status becomes pending instead.
 
 ## Soft gate, or lock it down?
 
@@ -182,6 +193,7 @@ different reviewer bot or change the trigger text.
 | `REVIEW_BOT_LOGINS` | `chatgpt-codex-connector,chatgpt-codex-connector[bot]` | Bot logins whose clean pass counts (comma-separated). |
 | `CLEAN_REVIEW_TEXT` | `Codex Review: Didn't find any major issues.` | Text that marks a clean review pass. |
 | `CLEAN_REACTION_CONTENT` | `+1` | PR body reaction that marks a clean review pass. |
+| `REVIEW_IN_PROGRESS_REACTION_CONTENT` | `eyes` | Reaction that marks the latest head as currently under review. |
 | `REVIEW_REQUEST_TEXT` | `@codex review` | Comment text that marks the latest review request boundary for reaction freshness. |
 
 Secrets are stored separately in Cloudflare via `wrangler secret put`:
@@ -208,6 +220,9 @@ Secrets are stored separately in Cloudflare via `wrangler secret put`:
   before it doesn't count.
 - If you rely on the PR body `+1`, was the reaction created after both the latest
   head update and the latest `@codex review` request?
+- If the bot is still reviewing, does the PR body or latest review-request
+  comment have a fresh `eyes` reaction from the configured bot? That should show
+  as pending, not failed.
 - Are there still unresolved review threads?
 - Under **Advanced > Recent deliveries** in the App settings, is there an
   `issue_comment` delivery at the time of that comment?

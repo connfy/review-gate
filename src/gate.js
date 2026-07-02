@@ -8,12 +8,18 @@
 
 export const DEFAULT_CLEAN_TEXT = "Codex Review: Didn't find any major issues.";
 export const DEFAULT_CLEAN_REACTION_CONTENT = "+1";
+export const DEFAULT_IN_PROGRESS_REACTION_CONTENT = "eyes";
 export const DEFAULT_REVIEW_REQUEST_TEXT = "@codex review";
 export const DEFAULT_BOT_LOGINS = Object.freeze([
   "chatgpt-codex-connector",
   "chatgpt-codex-connector[bot]",
 ]);
 export const DEFAULT_STATUS_CONTEXT = "review-gate/codex-clean";
+export const REVIEW_IN_PROGRESS_DESCRIPTION =
+  "Review bot is reviewing the latest head.";
+export const NO_CLEAN_REVIEW_DESCRIPTION =
+  "No clean review pass after the latest head update. Need a clean " +
+  "review comment, matching review body, or fresh PR body reaction.";
 
 const HEAD_REF_EVENTS = new Set(["head_ref_force_pushed", "head_ref_restored"]);
 
@@ -22,6 +28,8 @@ export function resolveConfig(config = {}) {
     cleanText: config.cleanText ?? DEFAULT_CLEAN_TEXT,
     cleanReactionContent:
       config.cleanReactionContent ?? DEFAULT_CLEAN_REACTION_CONTENT,
+    inProgressReactionContent:
+      config.inProgressReactionContent ?? DEFAULT_IN_PROGRESS_REACTION_CONTENT,
     reviewRequestText: config.reviewRequestText ?? DEFAULT_REVIEW_REQUEST_TEXT,
     botLogins:
       config.botLogins instanceof Set
@@ -188,16 +196,31 @@ function issueCommentQualifies(comment, sha, timelineEvents, config) {
   return idsAfterHead.has(Number(comment?.id));
 }
 
-function issueBodyReactionQualifies(reaction, boundary, config) {
-  const { cleanReactionContent, botLogins } = resolveConfig(config);
+function botReactionQualifies(reaction, content, boundary, config) {
+  const { botLogins } = resolveConfig(config);
   const author = loginFor(reaction?.user);
   const reactionTime = parseTimestamp(reaction?.created_at);
   return (
     botLogins.has(author) &&
-    String(reaction?.content ?? "") === cleanReactionContent &&
+    String(reaction?.content ?? "") === content &&
     reactionTime !== null &&
     boundary.timestamp !== null &&
     reactionTime >= boundary.timestamp
+  );
+}
+
+function issueBodyReactionQualifies(reaction, boundary, config) {
+  const { cleanReactionContent } = resolveConfig(config);
+  return botReactionQualifies(reaction, cleanReactionContent, boundary, config);
+}
+
+function issueBodyInProgressReactionQualifies(reaction, boundary, config) {
+  const { inProgressReactionContent } = resolveConfig(config);
+  return botReactionQualifies(
+    reaction,
+    inProgressReactionContent,
+    boundary,
+    config,
   );
 }
 
@@ -221,6 +244,119 @@ function cleanBodyReactions({
     }
   }
   return cleanEvents;
+}
+
+function reviewRequestReactionQualifies(group, boundary, config) {
+  const { botLogins, inProgressReactionContent } = resolveConfig(config);
+  const requestTime = reviewRequestTimestamp(group?.comment, config);
+  if (
+    requestTime === null ||
+    boundary.timestamp === null ||
+    requestTime < boundary.timestamp
+  ) {
+    return null;
+  }
+
+  for (const reaction of group?.reactions ?? []) {
+    const author = loginFor(reaction?.user);
+    const reactionTime = parseTimestamp(reaction?.created_at);
+    if (
+      botLogins.has(author) &&
+      String(reaction?.content ?? "") === inProgressReactionContent &&
+      reactionTime !== null &&
+      reactionTime >= requestTime
+    ) {
+      return {
+        detail: `review request ${inProgressReactionContent} reaction at ${reaction?.created_at}`,
+        timestamp: reactionTime,
+      };
+    }
+  }
+
+  return null;
+}
+
+function reviewInProgressEvents({
+  sha,
+  issueComments,
+  issueEyesReactions,
+  reviewRequestReactions,
+  timelineEvents,
+  config,
+}) {
+  const boundary = cleanReactionBoundary({
+    sha,
+    issueComments,
+    timelineEvents,
+    config,
+  });
+  const events = [];
+
+  for (const reaction of issueEyesReactions) {
+    if (issueBodyInProgressReactionQualifies(reaction, boundary, config)) {
+      const { inProgressReactionContent } = resolveConfig(config);
+      events.push({
+        detail: `PR body ${inProgressReactionContent} reaction at ${reaction?.created_at}`,
+        timestamp: parseTimestamp(reaction?.created_at) ?? boundary.timestamp,
+      });
+    }
+  }
+
+  for (const group of reviewRequestReactions) {
+    const event = reviewRequestReactionQualifies(group, boundary, config);
+    if (event !== null) {
+      events.push(event);
+    }
+  }
+
+  return events;
+}
+
+function latestReviewBotResponseTime({
+  sha,
+  issueComments,
+  reviews,
+  timelineEvents,
+  config,
+}) {
+  const { botLogins } = resolveConfig(config);
+  const headBoundaryTime = latestHeadBoundaryTime(timelineEvents, sha);
+  let latest = null;
+  const updateLatest = (timestamp) => {
+    if (timestamp !== null) {
+      latest = latest === null ? timestamp : Math.max(latest, timestamp);
+    }
+  };
+
+  for (const comment of issueComments) {
+    const author = loginFor(comment?.user);
+    if (!botLogins.has(author)) {
+      continue;
+    }
+    const body = String(comment?.body ?? "");
+    const reviewedPrefix = extractReviewedCommitPrefix(body);
+    const commentTime = parseTimestamp(comment?.created_at);
+    if (
+      shaMatchesPrefix(sha, reviewedPrefix) ||
+      (headBoundaryTime !== null &&
+        commentTime !== null &&
+        commentTime >= headBoundaryTime)
+    ) {
+      updateLatest(commentTime);
+    }
+  }
+
+  for (const review of reviews) {
+    const author = loginFor(review?.user);
+    if (
+      botLogins.has(author) &&
+      String(review?.commit_id ?? "") === sha
+    ) {
+      updateLatest(parseTimestamp(review?.submitted_at));
+    }
+  }
+
+  return latest;
 }
 
 function cleanCommentsFromTimeline(timelineEvents, sha, config) {
@@ -302,9 +438,9 @@ function findStaleCleanReaction({
       ? "latest review request"
       : "latest head update";
   return (
-    `Codex PR body ${cleanReactionContent} reaction at ` +
+    `Review bot PR body ${cleanReactionContent} reaction at ` +
     `${latestReaction.createdAt} is stale; it predates the ${source}. ` +
-    "Re-request @codex review."
+    "Re-request a review."
   );
 }
 
@@ -322,7 +458,7 @@ function findStaleCleanReview({ sha, issueComments, timelineEvents, config }) {
 
     const reviewedPrefix = extractReviewedCommitPrefix(body);
     if (reviewedPrefix && !shaMatchesPrefix(sha, reviewedPrefix)) {
-      return `Codex reviewed ${reviewedPrefix}, but head is now ${String(sha).slice(0, 12)}. Re-request @codex review.`;
+      return `Review bot reviewed ${reviewedPrefix}, but head is now ${String(sha).slice(0, 12)}. Re-request a review.`;
     }
 
     const boundaryIndex = latestHeadBoundaryIndex(timelineEvents, sha);
@@ -336,7 +472,7 @@ function findStaleCleanReview({ sha, issueComments, timelineEvents, config }) {
       commentIndex >= 0 &&
       commentIndex <= boundaryIndex
     ) {
-      return "Codex clean review is stale: a newer commit landed after the review. Re-request @codex review.";
+      return "Review bot clean review is stale: a newer commit landed after the review. Re-request a review.";
     }
   }
   return null;
@@ -395,8 +531,10 @@ export function evaluateGate({
   pr,
   issueComments = [],
   issueReactions = [],
+  issueEyesReactions = [],
   reviews = [],
   reviewThreads = [],
+  reviewRequestReactions = [],
   timelineEvents = [],
   config,
 }) {
@@ -427,6 +565,44 @@ export function evaluateGate({
     config: resolved,
   });
   if (cleanEvents.length === 0) {
+    const inProgressEvents = reviewInProgressEvents({
+      sha,
+      issueComments,
+      issueEyesReactions,
+      reviewRequestReactions,
+      timelineEvents,
+      config: resolved,
+    });
+    const latestInProgressTime = inProgressEvents.reduce(
+      (latest, event) =>
+        latest === null ? event.timestamp : Math.max(latest, event.timestamp),
+      null,
+    );
+    const latestBotResponseTime = latestReviewBotResponseTime({
+      sha,
+      issueComments,
+      reviews,
+      timelineEvents,
+      config: resolved,
+    });
+    const botFinishedReview =
+      latestInProgressTime !== null &&
+      latestBotResponseTime !== null &&
+      latestBotResponseTime >= latestInProgressTime;
+    if (
+      details.length === 0 &&
+      inProgressEvents.length > 0 &&
+      !botFinishedReview
+    ) {
+      return {
+        prNumber,
+        sha,
+        state: "pending",
+        description: REVIEW_IN_PROGRESS_DESCRIPTION,
+        details: inProgressEvents.map((event) => event.detail),
+      };
+    }
+
     const staleReview = findStaleCleanReview({
       sha,
       issueComments,
@@ -443,8 +619,7 @@ export function evaluateGate({
     details.push(
       staleReview ??
         staleReaction ??
-        "No clean review pass after the latest head update. Need a clean " +
-          "review comment, matching review body, or fresh PR body reaction.",
+        NO_CLEAN_REVIEW_DESCRIPTION,
     );
   }
 
