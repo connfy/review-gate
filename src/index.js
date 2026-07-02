@@ -12,6 +12,28 @@ import {
   verifySignature,
 } from "./webhook.js";
 
+const CLEAN_COMMENT_RETRY_DELAY_MS = 3_000;
+const REVIEW_START_RETRY_DELAY_MS = 15_000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function loginFor(user) {
+  if (!user || typeof user !== "object") {
+    return "";
+  }
+  return String(user.login ?? "");
+}
+
+function includesText(body, text) {
+  const needle = String(text ?? "");
+  if (needle.length === 0) {
+    return false;
+  }
+  return String(body ?? "").toLowerCase().includes(needle.toLowerCase());
+}
+
 function configFromEnv(env) {
   const botLogins = env.REVIEW_BOT_LOGINS
     ? env.REVIEW_BOT_LOGINS.split(",")
@@ -21,9 +43,74 @@ function configFromEnv(env) {
   return resolveConfig({
     cleanText: env.CLEAN_REVIEW_TEXT,
     cleanReactionContent: env.CLEAN_REACTION_CONTENT,
+    inProgressReactionContent: env.REVIEW_IN_PROGRESS_REACTION_CONTENT,
     reviewRequestText: env.REVIEW_REQUEST_TEXT,
     statusContext: env.STATUS_CONTEXT,
     botLogins,
+  });
+}
+
+function isReviewRequestComment(comment, config) {
+  const author = loginFor(comment?.user);
+  return (
+    !config.botLogins.has(author) &&
+    includesText(comment?.body, config.reviewRequestText)
+  );
+}
+
+function parseTimestamp(value) {
+  const timestamp = Date.parse(String(value ?? ""));
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function latestReviewRequestComments(issueComments, config) {
+  let latestTime = null;
+  let latestComments = [];
+
+  for (const comment of issueComments) {
+    if (comment?.id == null || !isReviewRequestComment(comment, config)) {
+      continue;
+    }
+    const timestamp = parseTimestamp(comment?.created_at);
+    if (timestamp === null) {
+      continue;
+    }
+    if (latestTime === null || timestamp > latestTime) {
+      latestTime = timestamp;
+      latestComments = [comment];
+    } else if (timestamp === latestTime) {
+      latestComments.push(comment);
+    }
+  }
+
+  return latestComments;
+}
+
+function eventMayStartReview(eventName, payload, config) {
+  if (eventName === "issue_comment") {
+    return (
+      String(payload?.action ?? "") === "created" &&
+      isReviewRequestComment(payload?.comment, config)
+    );
+  }
+
+  if (eventName !== "pull_request") {
+    return false;
+  }
+
+  return new Set([
+    "opened",
+    "reopened",
+    "ready_for_review",
+    "synchronize",
+  ]).has(String(payload?.action ?? ""));
+}
+
+async function reportStatus(client, result) {
+  await client.setStatus(result.sha, {
+    state: result.state,
+    description: result.description,
+    targetUrl: undefined,
   });
 }
 
@@ -37,42 +124,61 @@ async function evaluateAndReport(env, ref, config, options = {}) {
 
   let result = await evaluateFromGitHub(client, ref, config);
 
-  if (options.retryOnCleanComment && result.state === "failure") {
-    await new Promise((resolve) => setTimeout(resolve, 3_000));
+  if (options.retryOnCleanComment && result.state !== "success") {
+    await sleep(CLEAN_COMMENT_RETRY_DELAY_MS);
     result = await evaluateFromGitHub(client, ref, config);
   }
 
-  await client.setStatus(result.sha, {
-    state: result.state,
-    description: result.description,
-    targetUrl: undefined,
-  });
+  await reportStatus(client, result);
+
+  if (options.retryOnReviewStart && result.state === "failure") {
+    await sleep(REVIEW_START_RETRY_DELAY_MS);
+    const retryResult = await evaluateFromGitHub(client, ref, config);
+    if (retryResult.sha === result.sha) {
+      await reportStatus(client, retryResult);
+      result = retryResult;
+    }
+  }
 
   return result;
 }
 
 async function evaluateFromGitHub(client, ref, config) {
-  const pr = await client.pullRequest(ref.prNumber);
   const [
+    pr,
     issueComments,
     issueReactions,
+    issueEyesReactions,
     reviews,
     reviewThreads,
     timelineEvents,
   ] = await Promise.all([
+    client.pullRequest(ref.prNumber),
     client.issueComments(ref.prNumber),
     client.issueReactions(ref.prNumber, config.cleanReactionContent),
+    client.issueReactions(ref.prNumber, config.inProgressReactionContent),
     client.reviews(ref.prNumber),
     client.reviewThreads(ref.prNumber),
     client.timelineEvents(ref.prNumber),
   ]);
+  const reviewRequestReactions = await Promise.all(
+    latestReviewRequestComments(issueComments, config).map(async (comment) => ({
+      comment,
+      reactions: await client.issueCommentReactions(
+        comment.id,
+        config.inProgressReactionContent,
+      ),
+    })),
+  );
 
   return evaluateGate({
     pr,
     issueComments,
     issueReactions,
+    issueEyesReactions,
     reviews,
     reviewThreads,
+    reviewRequestReactions,
     timelineEvents,
     config,
   });
@@ -122,18 +228,20 @@ export default {
       eventName === "issue_comment" &&
       String(payload?.action ?? "") === "created" &&
       String(payload?.comment?.body ?? "").includes(config.cleanText);
+    const retryOnReviewStart = eventMayStartReview(eventName, payload, config);
 
     // Do the GitHub round-trips after responding so the webhook delivery is
     // acknowledged promptly even if the API calls take a moment.
     ctx.waitUntil(
-      evaluateAndReport(env, ref, config, { retryOnCleanComment }).catch(
-        (error) => {
-          console.error(
-            `gate evaluation failed for ${ref.owner}/${ref.repo}#${ref.prNumber}:`,
-            error,
-          );
-        },
-      ),
+      evaluateAndReport(env, ref, config, {
+        retryOnCleanComment,
+        retryOnReviewStart,
+      }).catch((error) => {
+        console.error(
+          `gate evaluation failed for ${ref.owner}/${ref.repo}#${ref.prNumber}:`,
+          error,
+        );
+      }),
     );
 
     return new Response("Accepted", { status: 202 });
