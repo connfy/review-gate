@@ -31,25 +31,27 @@ Review Gate는 딱 그 애매한 순간을 없애주는 작은 도구예요. Cod
 
 - PR이 "작성 중(draft)" 상태가 아니다
 - 아직 안 끝난 리뷰 대화가 없다
-- 정해둔 리뷰 봇이 최근 코드를 보고 "통과" 코멘트를 남겼다
+- 정해둔 리뷰 봇이 최근 코드를 보고 "통과" 신호를 남겼다
 
-여기서 "통과 코멘트"는 두 가지 중 하나면 인정돼요.
+여기서 "통과" 신호는 세 가지 중 하나면 인정돼요.
 
 - 리뷰 봇이 PR에 통과 문구가 담긴 코멘트를 남겼거나
 - 리뷰 봇이 지금 최신 코드에 대한 리뷰로 통과 문구를 남겼거나
+- 리뷰 봇이 PR 본문에 `+1` 반응을 남겼고, 그 반응이 최신 코드 업데이트와 최신 리뷰 요청
+  이후에 만들어진 경우입니다.
 
-기본값으로는 아래 봇이 남긴 코멘트만 믿고,
+기본값으로는 아래 봇이 남긴 신호만 믿고,
 
 - `chatgpt-codex-connector`
 - `chatgpt-codex-connector[bot]`
 
-아래 문구를 "통과" 신호로 봅니다.
+아래 문구와 PR 본문의 `+1` 반응을 "통과" 신호로 봅니다.
 
 `Codex Review: Didn't find any major issues.`
 
-참고로 리뷰어가 누른 좋아요(엄지척) 같은 이모지 반응은 보지 않아요. GitHub가 이모지
-반응은 알림으로 보내주지 않거든요. 이 도구는 GitHub가 보내주는 알림에만 의존하기 때문에,
-이모지는 안정적으로 확인할 방법이 없어서 일부러 뺐습니다.
+참고로 GitHub는 PR 본문 반응을 별도 알림으로 보내주지는 않아요. 대신 Review Gate는 다른
+PR/리뷰/코멘트 알림 때문에 PR을 다시 계산할 때, GitHub의 issue reactions API로 PR 본문
+반응을 같이 읽습니다.
 
 ## 설치하기 (생각보다 금방 끝나요)
 
@@ -66,7 +68,7 @@ GitHub에서 내 계정이나 조직(organization) 아래에 새 GitHub 앱을 �
 | --- | --- | --- |
 | Commit statuses | Read and write | PR에 통과/실패 표시를 직접 써야 해서요. |
 | Pull requests | Read-only | PR 상태와 리뷰, 코멘트, 리뷰 대화를 읽으려고요. |
-| Issues | Read-only | PR에 달리는 코멘트를 받으려고요. GitHub는 PR 코멘트를 내부적으로 이슈 코멘트로 다룹니다. |
+| Issues | Read-only | PR에 달리는 코멘트를 받고 PR 본문 반응을 읽으려고요. GitHub는 PR 코멘트와 PR 본문을 내부적으로 이슈로 다룹니다. |
 
 다음으로 **받을 알림(Subscribe to events)**에서 아래 다섯 개를 체크하세요.
 
@@ -147,7 +149,8 @@ Codex를 쓰고 있다면 보통 이렇게 리뷰를 부르면 돼요.
 @codex review
 ```
 
-리뷰 봇이 코멘트를 남기면 Review Gate가 곧 다시 확인하고, 실패인지 통과인지 알려줍니다.
+리뷰 봇이 통과 코멘트를 남기거나, 이후 다른 알림을 계기로 PR 본문의 `+1` 반응이 확인되면
+Review Gate가 다시 계산하고 실패인지 통과인지 알려줍니다.
 
 ## 참고용으로 쓸까, 아예 막아버릴까
 
@@ -171,6 +174,8 @@ GitHub가 아예 합치기 버튼을 못 누르게 막아주길 원한다면, �
 | `STATUS_CONTEXT` | `review-gate/codex-clean` | PR에 다는 표시의 이름 |
 | `REVIEW_BOT_LOGINS` | `chatgpt-codex-connector,chatgpt-codex-connector[bot]` | 통과로 인정할 봇 계정 목록 (쉼표로 구분) |
 | `CLEAN_REVIEW_TEXT` | `Codex Review: Didn't find any major issues.` | 통과로 인정할 문구 |
+| `CLEAN_REACTION_CONTENT` | `+1` | 통과로 인정할 PR 본문 반응 |
+| `REVIEW_REQUEST_TEXT` | `@codex review` | PR 본문 반응이 최신인지 판단할 때 쓰는 리뷰 요청 문구 |
 
 비밀값은 `wrangler secret put` 명령으로 Cloudflare에 따로 저장합니다.
 
@@ -192,6 +197,8 @@ GitHub가 아예 합치기 버튼을 못 누르게 막아주길 원한다면, �
 ### Codex는 통과라는데 계속 실패로 떠요
 
 - 통과 코멘트가 가장 최근 코드를 올린 "뒤"에 달렸나요? 그 전에 달린 건 인정 안 돼요.
+- PR 본문의 `+1` 반응을 쓰는 경우, 그 반응이 최신 코드 업데이트와 최신 `@codex review`
+  요청 뒤에 만들어졌나요?
 - 아직 안 끝난 리뷰 대화가 남아 있진 않나요?
 - GitHub 앱 설정의 **Advanced > Recent deliveries**에 그 코멘트가 달린 시각의
   이슈 코멘트 알림이 도착해 있나요?

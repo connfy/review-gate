@@ -21,6 +21,16 @@ function timelineBeforeHead(commentIds = []) {
   ];
 }
 
+function timelineHeadAt(timestamp) {
+  return [
+    {
+      event: "committed",
+      sha: "abc123",
+      author: { date: timestamp },
+    },
+  ];
+}
+
 test("clean review comment after latest head passes", () => {
   const result = evaluateGate({
     pr: pr(),
@@ -37,7 +47,55 @@ test("clean review comment after latest head passes", () => {
   assert.equal(result.state, "success");
 });
 
-test("thumbs-up reaction path no longer passes (reaction shortcut dropped)", () => {
+test("PR body thumbs-up reaction from review bot after latest head passes", () => {
+  const result = evaluateGate({
+    pr: pr(),
+    issueReactions: [
+      {
+        user: { login: "chatgpt-codex-connector[bot]" },
+        content: "+1",
+        created_at: "2026-05-28T00:02:00Z",
+      },
+    ],
+    timelineEvents: timelineHeadAt("2026-05-28T00:01:00Z"),
+  });
+  assert.equal(result.state, "success");
+  assert.match(result.details[0], /clean PR body reaction/);
+});
+
+test("PR body thumbs-up reaction from a user does not pass", () => {
+  const result = evaluateGate({
+    pr: pr(),
+    issueReactions: [
+      {
+        user: { login: "connfy" },
+        content: "+1",
+        created_at: "2026-05-28T00:02:00Z",
+      },
+    ],
+    timelineEvents: timelineHeadAt("2026-05-28T00:01:00Z"),
+  });
+  assert.equal(result.state, "failure");
+  assert.match(result.details[0], /No clean review pass/);
+});
+
+test("PR body thumbs-up reaction before latest head does not pass", () => {
+  const result = evaluateGate({
+    pr: pr(),
+    issueReactions: [
+      {
+        user: { login: "chatgpt-codex-connector[bot]" },
+        content: "+1",
+        created_at: "2026-05-28T00:00:00Z",
+      },
+    ],
+    timelineEvents: timelineHeadAt("2026-05-28T00:01:00Z"),
+  });
+  assert.equal(result.state, "failure");
+  assert.match(result.description, /PR body \+1 reaction.*stale/);
+});
+
+test("PR body thumbs-up reaction before latest review request does not pass", () => {
   const result = evaluateGate({
     pr: pr(),
     issueComments: [
@@ -45,13 +103,29 @@ test("thumbs-up reaction path no longer passes (reaction shortcut dropped)", () 
         id: 10,
         user: { login: "connfy" },
         body: "@codex review",
-        created_at: "2026-05-28T00:00:05Z",
+        created_at: "2026-05-28T00:03:00Z",
       },
     ],
-    timelineEvents: timelineAfterHead([10]),
+    issueReactions: [
+      {
+        user: { login: "chatgpt-codex-connector[bot]" },
+        content: "+1",
+        created_at: "2026-05-28T00:02:00Z",
+      },
+    ],
+    timelineEvents: [
+      ...timelineHeadAt("2026-05-28T00:01:00Z"),
+      {
+        event: "commented",
+        id: 10,
+        user: { login: "connfy" },
+        body: "@codex review",
+        created_at: "2026-05-28T00:03:00Z",
+      },
+    ],
   });
   assert.equal(result.state, "failure");
-  assert.match(result.details[0], /No clean review pass/);
+  assert.match(result.description, /latest review request/);
 });
 
 test("unresolved current thread blocks even with clean comment", () => {

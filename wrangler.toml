@@ -13,6 +13,10 @@ STATUS_CONTEXT = "review-gate/codex-clean"
 REVIEW_BOT_LOGINS = "chatgpt-codex-connector,chatgpt-codex-connector[bot]"
 # Substring that marks a clean review from the bot above.
 CLEAN_REVIEW_TEXT = "Codex Review: Didn't find any major issues."
+# PR body reaction content that marks a clean review from the bot above.
+CLEAN_REACTION_CONTENT = "+1"
+# Comment text that marks a new review request/staleness boundary.
+REVIEW_REQUEST_TEXT = "@codex review"
 
 # Secrets (set with `wrangler secret put <NAME>`, never commit them):
 #   GITHUB_APP_ID            App ID from the GitHub App settings page.

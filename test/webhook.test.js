@@ -81,10 +81,19 @@ test("events without an installation id are ignored", () => {
 test("user issue comments are ignored as gate signals", () => {
   const ignored = shouldIgnoreEvent(
     "issue_comment",
-    issueCommentPayload({ user: "connfy", body: "@codex review" }),
+    issueCommentPayload({ user: "connfy", body: "looks good to me" }),
     config,
   );
   assert.equal(ignored, true);
+});
+
+test("review request issue comments trigger evaluation", () => {
+  const ignored = shouldIgnoreEvent(
+    "issue_comment",
+    issueCommentPayload({ user: "connfy", body: "@codex review" }),
+    config,
+  );
+  assert.equal(ignored, false);
 });
 
 test("configured bot clean issue comments trigger evaluation", () => {

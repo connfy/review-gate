@@ -174,6 +174,14 @@ export class RepoClient {
     );
   }
 
+  issueReactions(prNumber, content = "+1") {
+    const encodedContent = encodeURIComponent(content);
+    const path =
+      `/repos/${this.owner}/${this.repo}/issues/${prNumber}/reactions` +
+      `?content=${encodedContent}`;
+    return githubPaginate(this.token, path);
+  }
+
   reviews(prNumber) {
     return githubPaginate(
       this.token,
