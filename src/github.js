@@ -67,7 +67,25 @@ export async function createAppJwt(appId, privateKeyPem) {
   return `${signingInput}.${base64UrlEncode(new Uint8Array(signature))}`;
 }
 
-async function githubFetch(token, method, path, { body, accept } = {}) {
+function parseLastPageFromLink(linkHeader) {
+  const link = String(linkHeader ?? "");
+  const lastLink = link
+    .split(",")
+    .map((part) => part.trim())
+    .find((part) => /;\s*rel="last"/.test(part));
+  const match = lastLink?.match(/[?&]page=(\d+)/);
+  const page = Number(match?.[1]);
+  return Number.isInteger(page) && page > 0 ? page : null;
+}
+
+function normalizeNonNegativeInteger(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0
+    ? Math.trunc(parsed)
+    : fallback;
+}
+
+async function githubFetchResponse(token, method, path, { body, accept } = {}) {
   const headers = {
     Accept: accept ?? "application/vnd.github+json",
     Authorization: `Bearer ${token}`,
@@ -87,13 +105,21 @@ async function githubFetch(token, method, path, { body, accept } = {}) {
     throw new Error(`GitHub ${method} ${path} failed: ${response.status} ${text}`);
   }
   const text = await response.text();
-  return text ? JSON.parse(text) : null;
+  return {
+    data: text ? JSON.parse(text) : null,
+    headers: response.headers,
+  };
+}
+
+async function githubFetch(token, method, path, options = {}) {
+  const response = await githubFetchResponse(token, method, path, options);
+  return response.data;
 }
 
 async function githubPaginate(
   token,
   path,
-  { accept, limit = Infinity, pageOffset = 0 } = {},
+  { accept, limit = Infinity, pageOffset = 0, pageCursor = pageOffset } = {},
 ) {
   if (Number.isFinite(limit) && limit <= 0) {
     return [];
@@ -101,19 +127,31 @@ async function githubPaginate(
   const separator = path.includes("?") ? "&" : "?";
   const out = [];
   const perPage = Number.isFinite(limit) ? Math.max(1, Math.min(100, limit)) : 100;
-  let page = Math.max(0, Math.trunc(pageOffset)) + 1;
+  const cursor = normalizeNonNegativeInteger(pageCursor);
+  let page = normalizeNonNegativeInteger(pageOffset) + 1;
   let wrapped = false;
+  let retargeted = false;
   for (;;) {
-    const rows = await githubFetch(
+    const response = await githubFetchResponse(
       token,
       "GET",
       `${path}${separator}per_page=${perPage}&page=${page}`,
       { accept },
     );
+    const rows = response.data;
     if (!Array.isArray(rows)) {
       throw new Error(`expected list response from ${path}`);
     }
-    if (rows.length === 0 && pageOffset > 0 && !wrapped) {
+    const lastPage = parseLastPageFromLink(response.headers.get("link"));
+    if (lastPage !== null && !retargeted) {
+      const targetPage = (cursor % lastPage) + 1;
+      retargeted = true;
+      if (targetPage !== page) {
+        page = targetPage;
+        continue;
+      }
+    }
+    if (rows.length === 0 && page > 1 && !wrapped) {
       page = 1;
       wrapped = true;
       continue;
@@ -177,18 +215,38 @@ export async function listInstallationRepositories(token, options = {}) {
     return out;
   }
   const perPage = Number.isFinite(limit) ? Math.max(1, Math.min(100, limit)) : 100;
-  let page = Math.max(0, Math.trunc(options.pageOffset ?? 0)) + 1;
+  const cursor = normalizeNonNegativeInteger(
+    options.pageCursor ?? options.pageOffset,
+  );
+  let page = normalizeNonNegativeInteger(options.pageOffset) + 1;
   let wrapped = false;
+  let retargeted = false;
   for (;;) {
-    const data = await githubFetch(
+    const response = await githubFetchResponse(
       token,
       "GET",
       `/installation/repositories?per_page=${perPage}&page=${page}`,
     );
+    const data = response.data;
     const repositories = Array.isArray(data?.repositories)
       ? data.repositories
       : [];
-    if (repositories.length === 0 && options.pageOffset > 0 && !wrapped) {
+    const totalCount = Number(data?.total_count);
+    const lastPageFromCount =
+      Number.isFinite(totalCount) && totalCount > 0
+        ? Math.max(1, Math.ceil(totalCount / perPage))
+        : null;
+    const lastPage =
+      parseLastPageFromLink(response.headers.get("link")) ?? lastPageFromCount;
+    if (lastPage !== null && !retargeted) {
+      const targetPage = (cursor % lastPage) + 1;
+      retargeted = true;
+      if (targetPage !== page) {
+        page = targetPage;
+        continue;
+      }
+    }
+    if (repositories.length === 0 && page > 1 && !wrapped) {
       page = 1;
       wrapped = true;
       continue;
@@ -331,12 +389,11 @@ export class RepoClient {
   }
 
   async latestStatusForContext(sha) {
-    const data = await githubFetch(
+    const statuses = await githubPaginate(
       this.token,
-      "GET",
-      `/repos/${this.owner}/${this.repo}/commits/${sha}/status`,
+      `/repos/${this.owner}/${this.repo}/commits/${sha}/statuses`,
+      { limit: 1000 },
     );
-    const statuses = Array.isArray(data?.statuses) ? data.statuses : [];
     return (
       statuses.find((status) => status?.context === this.statusContext) ?? null
     );

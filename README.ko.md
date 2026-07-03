@@ -194,7 +194,7 @@ GitHub가 아예 합치기 버튼을 못 누르게 막아주길 원한다면, �
 | `SWEEP_MAX_INSTALLATIONS` | `10` | 예약 sweep 한 번에서 확인할 GitHub App 설치 수 상한 |
 | `SWEEP_MAX_REPOSITORIES` | `4` | 예약 sweep 한 번에서 확인할 저장소 수 상한 |
 | `SWEEP_MAX_PULL_REQUESTS` | `2` | 예약 sweep 한 번에서 평가할 열린 PR 수 상한 |
-| `SWEEP_PAGE_SPAN` | `10` | 예약 sweep이 cron 실행마다 돌려가며 확인할 페이지 창 수 |
+| `SWEEP_PAGE_SPAN` | `10` | 예약 sweep의 초기 페이지 probe 창. GitHub가 마지막 페이지를 알려주면 전체 목록을 돌려가며 봅니다. |
 
 기본 cron은 `wrangler.toml`에서 3분마다 실행되도록 잡혀 있습니다.
 
@@ -205,7 +205,8 @@ crons = [ "*/3 * * * *" ]
 
 기본 상한은 작은 Worker 플랜에서도 무리하지 않도록 보수적으로 잡았습니다. 설치 규모가 크면
 상한을 올릴 수 있고, 예약 sweep은 설치, 저장소, PR, 페이지 창을 돌려가며 보므로 cap이
-걸려도 매번 같은 첫 페이지만 보지는 않습니다.
+걸려도 매번 같은 첫 페이지만 보지는 않습니다. `SWEEP_PAGE_SPAN`은 첫 probe만 제한하고,
+GitHub pagination 정보가 있으면 더 큰 목록도 시간이 지나며 뒤 페이지까지 진행합니다.
 
 비밀값은 `wrangler secret put` 명령으로 Cloudflare에 따로 저장합니다.
 

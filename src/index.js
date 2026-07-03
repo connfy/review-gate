@@ -98,10 +98,14 @@ function pageOffsetFor(seed, pageSpan, ...parts) {
   if (pageSpan <= 1) {
     return 0;
   }
+  return pageCursorFor(seed, ...parts) % pageSpan;
+}
+
+function pageCursorFor(seed, ...parts) {
   const normalizedSeed = Number.isFinite(Number(seed))
     ? Math.max(0, Math.trunc(Number(seed)))
     : 0;
-  return (hashString(parts.join(":")) + normalizedSeed) % pageSpan;
+  return hashString(parts.join(":")) + normalizedSeed;
 }
 
 function rotateList(items, seed, ...parts) {
@@ -236,6 +240,7 @@ export async function sweepOpenPullRequests(env, config, options = {}) {
     parsePositiveInteger(env.SWEEP_PAGE_SPAN, SWEEP_PAGE_SPAN);
   const rotationSeed =
     options.rotationSeed ?? Math.floor(Date.now() / (3 * 60 * 1000));
+  const orderSeed = Math.floor(rotationSeed / pageSpan);
 
   const installations = rotateList(
     await listAppInstallations(
@@ -244,9 +249,10 @@ export async function sweepOpenPullRequests(env, config, options = {}) {
       {
         limit: maxInstallations,
         pageOffset: pageOffsetFor(rotationSeed, pageSpan, "installations"),
+        pageCursor: pageCursorFor(rotationSeed, "installations"),
       },
     ),
-    rotationSeed,
+    orderSeed,
     "installation-order",
   );
 
@@ -299,8 +305,13 @@ export async function sweepOpenPullRequests(env, config, options = {}) {
             "repositories",
             String(installationId),
           ),
+          pageCursor: pageCursorFor(
+            rotationSeed,
+            "repositories",
+            String(installationId),
+          ),
         }),
-        rotationSeed,
+        orderSeed,
         "repository-order",
         String(installationId),
       );
@@ -335,7 +346,7 @@ export async function sweepOpenPullRequests(env, config, options = {}) {
 
   const repositories = rotateList(
     repositoriesToSweep,
-    rotationSeed,
+    orderSeed,
     "selected-repository-order",
   );
 
@@ -358,6 +369,7 @@ export async function sweepOpenPullRequests(env, config, options = {}) {
       pulls = await client.openPullRequests({
         limit: pullRequestLimit,
         pageOffset: pageOffsetFor(rotationSeed, pageSpan, "pulls", owner, repo),
+        pageCursor: pageCursorFor(rotationSeed, "pulls", owner, repo),
       });
       if (pulls.length >= pullRequestLimit) {
         summary.limited = true;

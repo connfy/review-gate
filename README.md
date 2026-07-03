@@ -202,7 +202,7 @@ different reviewer bot or change the trigger text.
 | `SWEEP_MAX_INSTALLATIONS` | `10` | Safety cap for GitHub App installations checked per scheduled sweep. |
 | `SWEEP_MAX_REPOSITORIES` | `4` | Safety cap for repositories checked per scheduled sweep. |
 | `SWEEP_MAX_PULL_REQUESTS` | `2` | Safety cap for open PRs evaluated per scheduled sweep. |
-| `SWEEP_PAGE_SPAN` | `10` | Number of paginated windows the scheduled sweep rotates through across cron runs. |
+| `SWEEP_PAGE_SPAN` | `10` | Initial page probe window for scheduled sweeps; when GitHub exposes the last page, the sweep rotates across the full list. |
 
 The default cron in `wrangler.toml` runs every three minutes:
 
@@ -214,7 +214,9 @@ crons = [ "*/3 * * * *" ]
 The conservative default caps are chosen to stay practical on small Worker
 plans. Larger installations can raise the caps, and the sweep rotates
 installations, repositories, pull requests, and paginated windows so capped runs
-do not always start in the same place.
+do not always start in the same place. `SWEEP_PAGE_SPAN` keeps the first probe
+bounded, while GitHub pagination metadata lets larger lists advance beyond that
+initial window over time.
 
 Secrets are stored separately in Cloudflare via `wrangler secret put`:
 
