@@ -90,22 +90,36 @@ async function githubFetch(token, method, path, { body, accept } = {}) {
   return text ? JSON.parse(text) : null;
 }
 
-async function githubPaginate(token, path, { accept } = {}) {
+async function githubPaginate(
+  token,
+  path,
+  { accept, limit = Infinity, pageOffset = 0 } = {},
+) {
+  if (Number.isFinite(limit) && limit <= 0) {
+    return [];
+  }
   const separator = path.includes("?") ? "&" : "?";
   const out = [];
-  let page = 1;
+  const perPage = Number.isFinite(limit) ? Math.max(1, Math.min(100, limit)) : 100;
+  let page = Math.max(0, Math.trunc(pageOffset)) + 1;
+  let wrapped = false;
   for (;;) {
     const rows = await githubFetch(
       token,
       "GET",
-      `${path}${separator}per_page=100&page=${page}`,
+      `${path}${separator}per_page=${perPage}&page=${page}`,
       { accept },
     );
     if (!Array.isArray(rows)) {
       throw new Error(`expected list response from ${path}`);
     }
-    out.push(...rows);
-    if (rows.length < 100) {
+    if (rows.length === 0 && pageOffset > 0 && !wrapped) {
+      page = 1;
+      wrapped = true;
+      continue;
+    }
+    out.push(...rows.slice(0, limit - out.length));
+    if (out.length >= limit || rows.length < perPage) {
       return out;
     }
     page += 1;
@@ -151,25 +165,36 @@ export async function getCachedInstallationToken(
   return data.token;
 }
 
-export async function listAppInstallations(appId, privateKeyPem) {
+export async function listAppInstallations(appId, privateKeyPem, options = {}) {
   const jwt = await createAppJwt(appId, privateKeyPem);
-  return githubPaginate(jwt, "/app/installations");
+  return githubPaginate(jwt, "/app/installations", options);
 }
 
-export async function listInstallationRepositories(token) {
+export async function listInstallationRepositories(token, options = {}) {
   const out = [];
-  let page = 1;
+  const limit = options.limit ?? Infinity;
+  if (Number.isFinite(limit) && limit <= 0) {
+    return out;
+  }
+  const perPage = Number.isFinite(limit) ? Math.max(1, Math.min(100, limit)) : 100;
+  let page = Math.max(0, Math.trunc(options.pageOffset ?? 0)) + 1;
+  let wrapped = false;
   for (;;) {
     const data = await githubFetch(
       token,
       "GET",
-      `/installation/repositories?per_page=100&page=${page}`,
+      `/installation/repositories?per_page=${perPage}&page=${page}`,
     );
     const repositories = Array.isArray(data?.repositories)
       ? data.repositories
       : [];
-    out.push(...repositories);
-    if (repositories.length < 100) {
+    if (repositories.length === 0 && options.pageOffset > 0 && !wrapped) {
+      page = 1;
+      wrapped = true;
+      continue;
+    }
+    out.push(...repositories.slice(0, limit - out.length));
+    if (out.length >= limit || repositories.length < perPage) {
       return out;
     }
     page += 1;
@@ -192,10 +217,11 @@ export class RepoClient {
     );
   }
 
-  openPullRequests() {
+  openPullRequests(options = {}) {
     return githubPaginate(
       this.token,
-      `/repos/${this.owner}/${this.repo}/pulls?state=open`,
+      `/repos/${this.owner}/${this.repo}/pulls?state=open&sort=updated&direction=desc`,
+      options,
     );
   }
 

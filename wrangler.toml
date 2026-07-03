@@ -21,15 +21,15 @@ CLEAN_REACTION_CONTENT = "+1"
 REVIEW_IN_PROGRESS_REACTION_CONTENT = "eyes"
 # Comment text that marks a new review request/staleness boundary.
 REVIEW_REQUEST_TEXT = "@codex review"
-# After a review-start event reaches pending, re-check briefly because GitHub
-# does not send a standalone webhook for PR body reactions. Keep the default
-# bounded so the whole background task stays within the Worker waitUntil window.
+# Optional webhook-bound re-checks for pending review-start events. The durable
+# late-reaction path is the scheduled sweep, so this is disabled by default.
 REVIEW_PENDING_RETRY_INTERVAL_MS = "7000"
-REVIEW_PENDING_RETRY_ATTEMPTS = "2"
+REVIEW_PENDING_RETRY_ATTEMPTS = "0"
 # Safety caps for the scheduled sweep across GitHub App installations.
-SWEEP_MAX_INSTALLATIONS = "25"
-SWEEP_MAX_REPOSITORIES = "100"
-SWEEP_MAX_PULL_REQUESTS = "50"
+SWEEP_MAX_INSTALLATIONS = "10"
+SWEEP_MAX_REPOSITORIES = "4"
+SWEEP_MAX_PULL_REQUESTS = "2"
+SWEEP_PAGE_SPAN = "10"
 
 [triggers]
 crons = [ "*/3 * * * *" ]

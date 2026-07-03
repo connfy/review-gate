@@ -73,6 +73,32 @@ test("review-start retry keeps pending after bounded pending rechecks", async ()
   assert.equal(result.state, "pending");
 });
 
+test("review-start retry does not poll pending reviews by default", async () => {
+  const sleeps = [];
+  const reports = [];
+  const result = await maybeRetryReviewStart({
+    result: {
+      sha: "abc123",
+      state: "pending",
+      description: "Review bot is reviewing the latest head.",
+    },
+    retryOnReviewStart: true,
+    evaluate: async () => {
+      throw new Error("unexpected retry");
+    },
+    report: async (retryResult) => {
+      reports.push(retryResult.state);
+    },
+    sleepFn: async (delayMs) => {
+      sleeps.push(delayMs);
+    },
+  });
+
+  assert.deepEqual(sleeps, []);
+  assert.deepEqual(reports, []);
+  assert.equal(result.state, "pending");
+});
+
 test("review-start retry ignores stale retry results for an old head", async () => {
   const reports = [];
   const result = await maybeRetryReviewStart({

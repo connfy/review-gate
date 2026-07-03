@@ -189,11 +189,12 @@ GitHub가 아예 합치기 버튼을 못 누르게 막아주길 원한다면, �
 | `REVIEW_IN_PROGRESS_REACTION_CONTENT` | `eyes` | 최신 코드를 리뷰 중이라고 볼 반응 |
 | `REVIEW_REQUEST_TEXT` | `@codex review` | PR 본문 반응이 최신인지 판단할 때 쓰는 리뷰 요청 문구 |
 | `REVIEW_START_RETRY_DELAY_MS` | `15000` | PR 생성/리뷰 요청 직후 늦게 붙는 `eyes`를 다시 확인하기 전 기다리는 시간 |
-| `REVIEW_PENDING_RETRY_INTERVAL_MS` | `7000` | 진행 중 리뷰에서 제한 재확인 사이에 기다리는 시간 |
-| `REVIEW_PENDING_RETRY_ATTEMPTS` | `2` | PR 본문 `+1`이나 최종 리뷰 결과를 확인할 최대 재확인 횟수. `0`이면 끕니다. |
-| `SWEEP_MAX_INSTALLATIONS` | `25` | 예약 sweep 한 번에서 확인할 GitHub App 설치 수 상한 |
-| `SWEEP_MAX_REPOSITORIES` | `100` | 예약 sweep 한 번에서 확인할 저장소 수 상한 |
-| `SWEEP_MAX_PULL_REQUESTS` | `50` | 예약 sweep 한 번에서 평가할 열린 PR 수 상한 |
+| `REVIEW_PENDING_RETRY_INTERVAL_MS` | `7000` | 진행 중 리뷰에서 선택적 웹훅 내부 재확인 사이에 기다리는 시간 |
+| `REVIEW_PENDING_RETRY_ATTEMPTS` | `0` | 웹훅 작업 안에서 진행할 최대 pending 재확인 횟수. 늦은 PR 본문 `+1`은 예약 sweep이 잡기 때문에 기본값은 꺼져 있습니다. |
+| `SWEEP_MAX_INSTALLATIONS` | `10` | 예약 sweep 한 번에서 확인할 GitHub App 설치 수 상한 |
+| `SWEEP_MAX_REPOSITORIES` | `4` | 예약 sweep 한 번에서 확인할 저장소 수 상한 |
+| `SWEEP_MAX_PULL_REQUESTS` | `2` | 예약 sweep 한 번에서 평가할 열린 PR 수 상한 |
+| `SWEEP_PAGE_SPAN` | `10` | 예약 sweep이 cron 실행마다 돌려가며 확인할 페이지 창 수 |
 
 기본 cron은 `wrangler.toml`에서 3분마다 실행되도록 잡혀 있습니다.
 
@@ -201,6 +202,10 @@ GitHub가 아예 합치기 버튼을 못 누르게 막아주길 원한다면, �
 [triggers]
 crons = [ "*/3 * * * *" ]
 ```
+
+기본 상한은 작은 Worker 플랜에서도 무리하지 않도록 보수적으로 잡았습니다. 설치 규모가 크면
+상한을 올릴 수 있고, 예약 sweep은 설치, 저장소, PR, 페이지 창을 돌려가며 보므로 cap이
+걸려도 매번 같은 첫 페이지만 보지는 않습니다.
 
 비밀값은 `wrangler secret put` 명령으로 Cloudflare에 따로 저장합니다.
 

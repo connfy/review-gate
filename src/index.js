@@ -21,10 +21,11 @@ import {
 const CLEAN_COMMENT_RETRY_DELAY_MS = 3_000;
 const REVIEW_START_RETRY_DELAY_MS = 15_000;
 const REVIEW_PENDING_RETRY_INTERVAL_MS = 7_000;
-const REVIEW_PENDING_RETRY_ATTEMPTS = 2;
-const SWEEP_MAX_INSTALLATIONS = 25;
-const SWEEP_MAX_REPOSITORIES = 100;
-const SWEEP_MAX_PULL_REQUESTS = 50;
+const REVIEW_PENDING_RETRY_ATTEMPTS = 0;
+const SWEEP_MAX_INSTALLATIONS = 10;
+const SWEEP_MAX_REPOSITORIES = 4;
+const SWEEP_MAX_PULL_REQUESTS = 2;
+const SWEEP_PAGE_SPAN = 10;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -83,6 +84,32 @@ function parseNonNegativeInteger(value, fallback) {
   }
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function hashString(value) {
+  let hash = 0;
+  for (let i = 0; i < value.length; i += 1) {
+    hash = (hash * 31 + value.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash);
+}
+
+function pageOffsetFor(seed, pageSpan, ...parts) {
+  if (pageSpan <= 1) {
+    return 0;
+  }
+  const normalizedSeed = Number.isFinite(Number(seed))
+    ? Math.max(0, Math.trunc(Number(seed)))
+    : 0;
+  return (hashString(parts.join(":")) + normalizedSeed) % pageSpan;
+}
+
+function rotateList(items, seed, ...parts) {
+  if (!Array.isArray(items) || items.length <= 1) {
+    return items;
+  }
+  const offset = pageOffsetFor(seed, items.length, ...parts);
+  return items.slice(offset).concat(items.slice(0, offset));
 }
 
 function isReviewRequestComment(comment, config) {
@@ -204,10 +231,23 @@ export async function sweepOpenPullRequests(env, config, options = {}) {
   const maxPullRequests =
     options.maxPullRequests ??
     parsePositiveInteger(env.SWEEP_MAX_PULL_REQUESTS, SWEEP_MAX_PULL_REQUESTS);
+  const pageSpan =
+    options.pageSpan ??
+    parsePositiveInteger(env.SWEEP_PAGE_SPAN, SWEEP_PAGE_SPAN);
+  const rotationSeed =
+    options.rotationSeed ?? Math.floor(Date.now() / (3 * 60 * 1000));
 
-  const installations = await listAppInstallations(
-    env.GITHUB_APP_ID,
-    env.GITHUB_APP_PRIVATE_KEY,
+  const installations = rotateList(
+    await listAppInstallations(
+      env.GITHUB_APP_ID,
+      env.GITHUB_APP_PRIVATE_KEY,
+      {
+        limit: maxInstallations,
+        pageOffset: pageOffsetFor(rotationSeed, pageSpan, "installations"),
+      },
+    ),
+    rotationSeed,
+    "installation-order",
   );
 
   const summary = {
@@ -217,33 +257,70 @@ export async function sweepOpenPullRequests(env, config, options = {}) {
     updated: 0,
     unchanged: 0,
     errors: 0,
-    limited: false,
+    limited: installations.length >= maxInstallations,
   };
+  const repositoriesToSweep = [];
 
-  for (const installation of installations) {
-    if (summary.installations >= maxInstallations) {
+  for (let index = 0; index < installations.length; index += 1) {
+    if (repositoriesToSweep.length >= maxRepositories) {
       summary.limited = true;
       break;
     }
+
+    const installation = installations[index];
     summary.installations += 1;
     const installationId = Number(installation?.id);
     if (!Number.isFinite(installationId)) {
       continue;
     }
 
-    const token = await getCachedInstallationToken(
-      env.GITHUB_APP_ID,
-      env.GITHUB_APP_PRIVATE_KEY,
-      installationId,
+    const remainingInstallations = installations.length - index;
+    const remainingRepositoryBudget =
+      maxRepositories - repositoriesToSweep.length;
+    const repositoryLimit = Math.max(
+      1,
+      Math.ceil(remainingRepositoryBudget / remainingInstallations),
     );
-    const repositories = await listInstallationRepositories(token);
+
+    let token;
+    let repositories;
+    try {
+      token = await getCachedInstallationToken(
+        env.GITHUB_APP_ID,
+        env.GITHUB_APP_PRIVATE_KEY,
+        installationId,
+      );
+      repositories = rotateList(
+        await listInstallationRepositories(token, {
+          limit: repositoryLimit,
+          pageOffset: pageOffsetFor(
+            rotationSeed,
+            pageSpan,
+            "repositories",
+            String(installationId),
+          ),
+        }),
+        rotationSeed,
+        "repository-order",
+        String(installationId),
+      );
+      if (repositories.length >= repositoryLimit) {
+        summary.limited = true;
+      }
+    } catch (error) {
+      summary.errors += 1;
+      console.error(
+        `scheduled sweep failed to enumerate installation ${installationId}:`,
+        error,
+      );
+      continue;
+    }
 
     for (const repository of repositories) {
-      if (summary.repositories >= maxRepositories) {
+      if (repositoriesToSweep.length >= maxRepositories) {
         summary.limited = true;
-        return summary;
+        break;
       }
-      summary.repositories += 1;
 
       const owner = String(repository?.owner?.login ?? "");
       const repo = String(repository?.name ?? "");
@@ -251,43 +328,72 @@ export async function sweepOpenPullRequests(env, config, options = {}) {
         continue;
       }
 
-      const client = new RepoClient(token, owner, repo, config.statusContext);
-      let pulls = [];
+      repositoriesToSweep.push({ token, owner, repo });
+      summary.repositories += 1;
+    }
+  }
+
+  const repositories = rotateList(
+    repositoriesToSweep,
+    rotationSeed,
+    "selected-repository-order",
+  );
+
+  for (let index = 0; index < repositories.length; index += 1) {
+    if (summary.pullRequests >= maxPullRequests) {
+      summary.limited = true;
+      break;
+    }
+
+    const { token, owner, repo } = repositories[index];
+    const client = new RepoClient(token, owner, repo, config.statusContext);
+    const remainingRepositories = repositories.length - index;
+    const remainingPullRequestBudget = maxPullRequests - summary.pullRequests;
+    const pullRequestLimit = Math.max(
+      1,
+      Math.ceil(remainingPullRequestBudget / remainingRepositories),
+    );
+    let pulls = [];
+    try {
+      pulls = await client.openPullRequests({
+        limit: pullRequestLimit,
+        pageOffset: pageOffsetFor(rotationSeed, pageSpan, "pulls", owner, repo),
+      });
+      if (pulls.length >= pullRequestLimit) {
+        summary.limited = true;
+      }
+    } catch (error) {
+      summary.errors += 1;
+      console.error(`scheduled sweep failed to list ${owner}/${repo}:`, error);
+      continue;
+    }
+
+    for (const pull of pulls) {
+      if (summary.pullRequests >= maxPullRequests) {
+        summary.limited = true;
+        break;
+      }
+      summary.pullRequests += 1;
+
       try {
-        pulls = await client.openPullRequests();
+        const result = await evaluateFromGitHub(
+          client,
+          { prNumber: Number(pull.number) },
+          config,
+        );
+        const currentStatus = await client.latestStatusForContext(result.sha);
+        if (shouldReportStatus(currentStatus, result)) {
+          await reportStatus(client, result);
+          summary.updated += 1;
+        } else {
+          summary.unchanged += 1;
+        }
       } catch (error) {
         summary.errors += 1;
-        console.error(`scheduled sweep failed to list ${owner}/${repo}:`, error);
-        continue;
-      }
-
-      for (const pull of pulls) {
-        if (summary.pullRequests >= maxPullRequests) {
-          summary.limited = true;
-          return summary;
-        }
-        summary.pullRequests += 1;
-
-        try {
-          const result = await evaluateFromGitHub(
-            client,
-            { prNumber: Number(pull.number) },
-            config,
-          );
-          const currentStatus = await client.latestStatusForContext(result.sha);
-          if (shouldReportStatus(currentStatus, result)) {
-            await reportStatus(client, result);
-            summary.updated += 1;
-          } else {
-            summary.unchanged += 1;
-          }
-        } catch (error) {
-          summary.errors += 1;
-          console.error(
-            `scheduled sweep failed for ${owner}/${repo}#${pull.number}:`,
-            error,
-          );
-        }
+        console.error(
+          `scheduled sweep failed for ${owner}/${repo}#${pull.number}:`,
+          error,
+        );
       }
     }
   }
@@ -320,8 +426,9 @@ export async function maybeRetryReviewStart({
   }
 
   // GitHub does not send a standalone webhook when the bot adds a PR body
-  // reaction. If the review has only reached the in-progress state, use a small
-  // bounded set of re-checks within the webhook's background-task window.
+  // reaction. Scheduled sweeps are the durable path for late reactions; this
+  // optional loop is only for installations that explicitly enable short
+  // webhook-bound re-checks.
   for (
     let attempt = 0;
     current.state === "pending" &&
@@ -387,8 +494,12 @@ async function evaluateFromGitHub(client, ref, config) {
 }
 
 export default {
-  async scheduled(_controller, env, _ctx) {
-    const summary = await sweepOpenPullRequests(env, configFromEnv(env));
+  async scheduled(controller, env, _ctx) {
+    const summary = await sweepOpenPullRequests(env, configFromEnv(env), {
+      rotationSeed: Math.floor(
+        Number(controller?.scheduledTime ?? Date.now()) / (3 * 60 * 1000),
+      ),
+    });
     console.log("scheduled sweep completed", JSON.stringify(summary));
   },
 
