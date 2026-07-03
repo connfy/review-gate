@@ -151,6 +151,31 @@ export async function getCachedInstallationToken(
   return data.token;
 }
 
+export async function listAppInstallations(appId, privateKeyPem) {
+  const jwt = await createAppJwt(appId, privateKeyPem);
+  return githubPaginate(jwt, "/app/installations");
+}
+
+export async function listInstallationRepositories(token) {
+  const out = [];
+  let page = 1;
+  for (;;) {
+    const data = await githubFetch(
+      token,
+      "GET",
+      `/installation/repositories?per_page=100&page=${page}`,
+    );
+    const repositories = Array.isArray(data?.repositories)
+      ? data.repositories
+      : [];
+    out.push(...repositories);
+    if (repositories.length < 100) {
+      return out;
+    }
+    page += 1;
+  }
+}
+
 export class RepoClient {
   constructor(token, owner, repo, statusContext) {
     this.token = token;
@@ -164,6 +189,13 @@ export class RepoClient {
       this.token,
       "GET",
       `/repos/${this.owner}/${this.repo}/pulls/${prNumber}`,
+    );
+  }
+
+  openPullRequests() {
+    return githubPaginate(
+      this.token,
+      `/repos/${this.owner}/${this.repo}/pulls?state=open`,
     );
   }
 
@@ -269,6 +301,18 @@ export class RepoClient {
       "POST",
       `/repos/${this.owner}/${this.repo}/statuses/${sha}`,
       { body },
+    );
+  }
+
+  async latestStatusForContext(sha) {
+    const data = await githubFetch(
+      this.token,
+      "GET",
+      `/repos/${this.owner}/${this.repo}/commits/${sha}/status`,
+    );
+    const statuses = Array.isArray(data?.statuses) ? data.statuses : [];
+    return (
+      statuses.find((status) => status?.context === this.statusContext) ?? null
     );
   }
 }

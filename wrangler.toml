@@ -2,7 +2,9 @@ name = "review-gate"
 main = "src/index.js"
 compatibility_date = "2026-05-01"
 
-# Pure webhook gate: no cron triggers, no polling.
+# Event-first gate with a light scheduled sweep. The sweep catches reaction-only
+# clean signals because GitHub does not emit a standalone PR body reaction
+# webhook.
 #
 # Non-secret configuration (safe to commit). Override per deployment to reuse
 # the tool with any review bot:
@@ -19,6 +21,18 @@ CLEAN_REACTION_CONTENT = "+1"
 REVIEW_IN_PROGRESS_REACTION_CONTENT = "eyes"
 # Comment text that marks a new review request/staleness boundary.
 REVIEW_REQUEST_TEXT = "@codex review"
+# After a review-start event reaches pending, re-check briefly because GitHub
+# does not send a standalone webhook for PR body reactions. Keep the default
+# bounded so the whole background task stays within the Worker waitUntil window.
+REVIEW_PENDING_RETRY_INTERVAL_MS = "7000"
+REVIEW_PENDING_RETRY_ATTEMPTS = "2"
+# Safety caps for the scheduled sweep across GitHub App installations.
+SWEEP_MAX_INSTALLATIONS = "25"
+SWEEP_MAX_REPOSITORIES = "100"
+SWEEP_MAX_PULL_REQUESTS = "50"
+
+[triggers]
+crons = [ "*/3 * * * *" ]
 
 # Secrets (set with `wrangler secret put <NAME>`, never commit them):
 #   GITHUB_APP_ID            App ID from the GitHub App settings page.
