@@ -19,9 +19,9 @@ and that status becomes your merge signal:
 
 Why you'll want it:
 
-- No cron, no polling workflow, no GitHub Actions minutes burned watching the
-  same PR. GitHub sends a webhook, the Worker recomputes the gate for the
-  affected PR, and it runs for very little.
+- Event-first, with a light scheduled sweep for the one thing GitHub does not
+  reliably wake us for: PR body reactions. No GitHub Actions minutes are burned
+  watching the same PR.
 - One Worker plus one GitHub App covers dozens of repositories at once.
 - Push a new commit and the status automatically resets to red. No more
   accidental merges on stale approvals.
@@ -62,9 +62,9 @@ and treats this line plus a PR-body `+1` as clean signals:
 
 Heads up: GitHub exposes PR body reactions through the issue reactions API, not
 as a standalone reaction webhook. Review Gate reads them whenever another PR,
-review, or issue-comment webhook causes the PR to be re-evaluated. It also does
-one short delayed re-check after PR-open and review-request events so late
-`eyes` reactions can turn the status from red to pending.
+review, or issue-comment webhook causes the PR to be re-evaluated. It also runs
+a small scheduled sweep over open PRs so a late PR-body `+1` can flip the status
+to green even when no comment/review webhook follows.
 
 ## Setup (quicker than it looks)
 
@@ -163,10 +163,11 @@ If you use Codex, you usually summon a review like this:
 @codex review
 ```
 
-Shortly after the bot leaves a clean-pass comment, or after a later webhook
-causes Review Gate to observe the bot's PR body `+1`, the Worker recomputes the
-PR and flips the status to green. If the bot has only acknowledged the review
-with `eyes`, the status becomes pending instead.
+Shortly after the bot leaves a clean-pass comment, after a later webhook causes
+Review Gate to observe the bot's PR body `+1`, or after one of the
+scheduled sweeps sees that `+1`, the Worker recomputes the PR and flips the
+status to green. If the bot has only acknowledged the review with `eyes`, the
+status becomes pending instead.
 
 ## Soft gate, or lock it down?
 
@@ -195,6 +196,27 @@ different reviewer bot or change the trigger text.
 | `CLEAN_REACTION_CONTENT` | `+1` | PR body reaction that marks a clean review pass. |
 | `REVIEW_IN_PROGRESS_REACTION_CONTENT` | `eyes` | Reaction that marks the latest head as currently under review. |
 | `REVIEW_REQUEST_TEXT` | `@codex review` | Comment text that marks the latest review request boundary for reaction freshness. |
+| `REVIEW_START_RETRY_DELAY_MS` | `15000` | Delay before re-checking a PR-open/review-request event for late `eyes`. |
+| `REVIEW_PENDING_RETRY_INTERVAL_MS` | `7000` | Delay between optional webhook-bound re-checks while the latest review is pending. |
+| `REVIEW_PENDING_RETRY_ATTEMPTS` | `0` | Maximum pending-review re-checks inside the webhook task. Disabled by default because scheduled sweeps catch late PR-body `+1` reactions. |
+| `SWEEP_MAX_INSTALLATIONS` | `10` | Safety cap for GitHub App installations checked per scheduled sweep. |
+| `SWEEP_MAX_REPOSITORIES` | `4` | Safety cap for repositories checked per scheduled sweep. |
+| `SWEEP_MAX_PULL_REQUESTS` | `2` | Safety cap for open PRs evaluated per scheduled sweep. |
+| `SWEEP_PAGE_SPAN` | `10` | Initial page probe window for scheduled sweeps; when GitHub exposes the last page, the sweep rotates across the full list. |
+
+The default cron in `wrangler.toml` runs every three minutes:
+
+```toml
+[triggers]
+crons = [ "*/3 * * * *" ]
+```
+
+The conservative default caps are chosen to stay practical on small Worker
+plans. Larger installations can raise the caps, and the sweep rotates
+installations, repositories, pull requests, and paginated windows so capped runs
+do not always start in the same place. `SWEEP_PAGE_SPAN` keeps the first probe
+bounded, while GitHub pagination metadata lets larger lists advance beyond that
+initial window over time.
 
 Secrets are stored separately in Cloudflare via `wrangler secret put`:
 
@@ -223,6 +245,8 @@ Secrets are stored separately in Cloudflare via `wrangler secret put`:
 - If the bot is still reviewing, does the PR body or latest review-request
   comment have a fresh `eyes` reaction from the configured bot? That should show
   as pending, not failed.
+- If the bot only uses a PR-body `+1`, wait for the next scheduled sweep.
+  GitHub does not emit a separate webhook for that reaction.
 - Are there still unresolved review threads?
 - Under **Advanced > Recent deliveries** in the App settings, is there an
   `issue_comment` delivery at the time of that comment?
