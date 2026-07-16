@@ -6,8 +6,8 @@ import {
   REVIEW_IN_PROGRESS_DESCRIPTION,
 } from "../src/gate.js";
 
-function pr({ draft = false } = {}) {
-  return { number: 123, draft, head: { sha: "abc123" } };
+function pr({ draft = false, state = "open" } = {}) {
+  return { number: 123, draft, state, head: { sha: "abc123" } };
 }
 
 function timelineAfterHead(commentIds = []) {
@@ -81,6 +81,12 @@ test("PR body eyes reaction from review bot after latest head is pending", () =>
   assert.equal(result.state, "pending");
   assert.equal(result.description, REVIEW_IN_PROGRESS_DESCRIPTION);
   assert.match(result.details[0], /PR body eyes reaction/);
+});
+
+test("gate results preserve the pull request state", () => {
+  const result = evaluateGate({ pr: pr({ state: "closed" }) });
+
+  assert.equal(result.prState, "closed");
 });
 
 test("PR body eyes reaction before latest head does not go pending", () => {

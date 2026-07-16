@@ -576,6 +576,7 @@ export function evaluateGate({
   const resolved = resolveConfig(config);
   const prNumber = Number(pr.number);
   const sha = String(pr.head.sha);
+  const prState = String(pr.state ?? "open");
   const generation = reviewGeneration(
     issueComments,
     timelineEvents,
@@ -637,6 +638,7 @@ export function evaluateGate({
       return {
         prNumber,
         sha,
+        prState,
         generation,
         state: "pending",
         description: REVIEW_IN_PROGRESS_DESCRIPTION,
@@ -668,6 +670,7 @@ export function evaluateGate({
     return {
       prNumber,
       sha,
+      prState,
       generation,
       state: "failure",
       description: summarizeFailureDetails(details),
@@ -678,6 +681,7 @@ export function evaluateGate({
   return {
     prNumber,
     sha,
+    prState,
     generation,
     state: "success",
     description: "Review gate passed.",

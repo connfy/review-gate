@@ -314,6 +314,14 @@ export async function sweepPendingPullRequests(env, config, options = {}) {
     rotationSeed,
     "pending-review-order",
   );
+  const observedEntriesByPullRequest = new Map();
+  for (const observedEntry of listing.entries) {
+    const identity = pendingReviewIdentity(observedEntry.ref);
+    const entriesForPullRequest =
+      observedEntriesByPullRequest.get(identity) ?? [];
+    entriesForPullRequest.push(observedEntry);
+    observedEntriesByPullRequest.set(identity, entriesForPullRequest);
+  }
   const seenPullRequests = new Set();
   const entries = rotatedEntries.filter((entry) => {
     const identity = pendingReviewIdentity(entry.ref);
@@ -350,6 +358,9 @@ export async function sweepPendingPullRequests(env, config, options = {}) {
         entry,
         result,
         {
+          observedEntries: observedEntriesByPullRequest.get(
+            pendingReviewIdentity(entry.ref),
+          ),
           expirationTtl: parsePositiveInteger(
             env.PENDING_REVIEW_TTL_SECONDS,
             PENDING_REVIEW_TTL_SECONDS,
@@ -393,9 +404,20 @@ export async function sweepOpenPullRequests(env, config, options = {}) {
     options.rotationSeed ?? Math.floor(Date.now() / (3 * 60 * 1000));
   const orderSeed = Math.floor(rotationSeed / pageSpan);
   const excludedPullRequests = options.excludedPullRequests ?? new Set();
+  const listInstallations = options.listInstallations ?? listAppInstallations;
+  const installationTokenFor =
+    options.getInstallationToken ?? getCachedInstallationToken;
+  const listRepositories =
+    options.listRepositories ?? listInstallationRepositories;
+  const clientFor =
+    options.clientFactory ??
+    ((token, owner, repo) =>
+      new RepoClient(token, owner, repo, config.statusContext));
+  const evaluate = options.evaluate ?? evaluateFromGitHub;
+  const report = options.reportStatus ?? reportStatus;
 
   const installations = rotateList(
-    await listAppInstallations(
+    await listInstallations(
       env.GITHUB_APP_ID,
       env.GITHUB_APP_PRIVATE_KEY,
       {
@@ -443,13 +465,13 @@ export async function sweepOpenPullRequests(env, config, options = {}) {
     let token;
     let repositories;
     try {
-      token = await getCachedInstallationToken(
+      token = await installationTokenFor(
         env.GITHUB_APP_ID,
         env.GITHUB_APP_PRIVATE_KEY,
         installationId,
       );
       repositories = rotateList(
-        await listInstallationRepositories(token, {
+        await listRepositories(token, {
           limit: repositoryLimit,
           pageOffset: pageOffsetFor(
             rotationSeed,
@@ -509,21 +531,23 @@ export async function sweepOpenPullRequests(env, config, options = {}) {
     }
 
     const { token, installationId, owner, repo } = repositories[index];
-    const client = new RepoClient(token, owner, repo, config.statusContext);
+    const client = clientFor(token, owner, repo);
     const remainingRepositories = repositories.length - index;
     const remainingPullRequestBudget = maxPullRequests - summary.pullRequests;
     const pullRequestLimit = Math.max(
       1,
       Math.ceil(remainingPullRequestBudget / remainingRepositories),
     );
+    const candidatePullRequestLimit =
+      pullRequestLimit + excludedPullRequests.size;
     let pulls = [];
     try {
       pulls = await client.openPullRequests({
-        limit: pullRequestLimit,
+        limit: candidatePullRequestLimit,
         pageOffset: pageOffsetFor(rotationSeed, pageSpan, "pulls", owner, repo),
         pageCursor: pageCursorFor(rotationSeed, "pulls", owner, repo),
       });
-      if (pulls.length >= pullRequestLimit) {
+      if (pulls.length >= candidatePullRequestLimit) {
         summary.limited = true;
       }
     } catch (error) {
@@ -548,14 +572,14 @@ export async function sweepOpenPullRequests(env, config, options = {}) {
       summary.pullRequests += 1;
 
       try {
-        const result = await evaluateFromGitHub(
+        const result = await evaluate(
           client,
           { prNumber: Number(pull.number) },
           config,
         );
         const currentStatus = await client.latestStatusForContext(result.sha);
         if (shouldReportStatus(currentStatus, result)) {
-          await reportStatus(client, result);
+          await report(client, result);
           summary.updated += 1;
         } else {
           summary.unchanged += 1;

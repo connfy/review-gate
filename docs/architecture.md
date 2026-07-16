@@ -40,6 +40,17 @@ threads, and timeline before changing the status.
   remains available if an entry expires or KV is unavailable.
 - Pending and fallback sweeps have separate caps, so long-running reviews cannot
   starve reaction-only PRs that were not queued.
+- The fallback over-fetches by the number of queued PRs it excludes, preserving
+  its evaluation budget when queued PRs lead an open-PR page.
+- Queue keys include the head SHA, review-request generation, and a unique write
+  revision. Scheduled terminal settlement removes the evaluated revision plus
+  same-generation revisions captured before evaluation, while preserving writes
+  that race in afterward.
+- A still-pending settlement compacts same-head, same-generation revisions from
+  its snapshot to one key, preventing webhook retries from inflating the queue.
+- A scheduled closed-PR evaluation removes every revision in its pre-evaluation
+  snapshot. A revision hidden by KV eventual consistency is handled by the next
+  sweep instead of being deleted unsafely after a concurrent reopen.
 - GitHub installation-token rate limits, rather than Workers Paid execution
   limits, determine the conservative per-run PR budget.
 

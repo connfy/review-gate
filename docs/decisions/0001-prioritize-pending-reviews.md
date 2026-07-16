@@ -33,14 +33,19 @@ reaction-to-status latency bound.
 Choose option 4. When a webhook evaluation ends in `pending`, store the GitHub
 installation, repository, PR number, and head SHA in KV metadata with a 24-hour
 TTL. The scheduled handler lists those records and evaluates them alongside the
-rotating open-PR fallback using separate budgets. Queue keys include both the
-head SHA and latest review-request generation. Terminal settlement deletes only
-the generation it evaluated, so an older evaluation cannot delete a newer
-review request on the same head. KV listing follows cursors so queues larger
-than one page remain reachable.
+rotating open-PR fallback using separate budgets. Queue keys include the head
+SHA, latest review-request generation, and a unique write revision. Scheduled
+terminal settlement deletes the evaluated revision and matching terminal
+generation revisions that were visible before evaluation. A pending or reopened
+write that races in afterward therefore receives a different key and survives.
+KV listing follows cursors so queues larger than one page remain reachable.
 
 KV is optional at runtime: if the binding is missing or listing fails, the
 existing open-PR sweep still runs with its full budget.
+
+Terminal and closed webhook evaluations deliberately defer queue deletion to
+the scheduled snapshot. This trades up to one cron interval of stale storage for
+race safety because Workers KV does not provide compare-and-swap deletion.
 
 ## Cost and limits
 

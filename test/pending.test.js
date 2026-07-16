@@ -45,12 +45,17 @@ test("pending review keys round-trip a PR ref and head SHA", () => {
 
   assert.deepEqual(pendingReviewEntry({ name: key }), {
     key,
-    ref: { ...ref, sha: "abc123", generation: "abc123" },
+    ref: {
+      ...ref,
+      sha: "abc123",
+      generation: "abc123",
+      revision: "abc123",
+    },
   });
   assert.equal(pendingReviewIdentity(ref), "connfy/aimstrings-web#245");
 });
 
-test("pending results are queued with a TTL and terminal results are removed", async () => {
+test("pending results are queued with a TTL and scheduled terminal settlement removes them", async () => {
   const namespace = new FakePendingReviews();
   const pending = await trackPendingReview(
     namespace,
@@ -70,15 +75,22 @@ test("pending results are queued with a TTL and terminal results are removed", a
   assert.deepEqual(listing.entries, [
     {
       key: pending.key,
-      ref: { ...ref, sha: "abc123", generation: "abc123" },
+      ref: {
+        ...ref,
+        sha: "abc123",
+        generation: "abc123",
+        revision: namespace.records.get(pending.key).metadata.revision,
+      },
     },
   ]);
 
-  const terminal = await trackPendingReview(namespace, ref, {
-    sha: "abc123",
-    state: "success",
-  });
-  assert.equal(terminal.action, "delete");
+  const terminal = await settlePendingReview(
+    namespace,
+    listing.entries[0],
+    { sha: "abc123", state: "success" },
+    { observedEntries: listing.entries },
+  );
+  assert.equal(terminal.action, "removed");
   assert.equal(namespace.records.size, 0);
 });
 
@@ -110,7 +122,7 @@ test("settlement moves a pending record to a newer head without deleting it", as
   assert.equal(settlement.action, "requeued");
   assert.equal(namespace.records.has(queued.key), false);
   assert.equal(
-    namespace.records.has(pendingReviewKey(ref, "new-head")),
+    namespace.records.has(settlement.key),
     true,
   );
 });
@@ -136,10 +148,186 @@ test("an older terminal settlement cannot delete a newer review generation", asy
       generation: "request:10",
       state: "success",
     },
+    {
+      observedEntries: (await listPendingReviews(namespace)).entries,
+    },
   );
 
   assert.equal(namespace.records.has(oldPending.key), false);
   assert.equal(namespace.records.has(newPending.key), true);
+});
+
+test("terminal settlement removes the terminal generation it observed", async () => {
+  const namespace = new FakePendingReviews();
+  const oldPending = await trackPendingReview(namespace, ref, {
+    sha: "same-head",
+    generation: "request:10",
+    state: "pending",
+  });
+  const currentPending = await trackPendingReview(namespace, ref, {
+    sha: "same-head",
+    generation: "request:11",
+    state: "pending",
+  });
+
+  await settlePendingReview(
+    namespace,
+    pendingReviewEntry({ name: oldPending.key }),
+    {
+      sha: "same-head",
+      generation: "request:11",
+      state: "success",
+    },
+    {
+      observedEntries: (await listPendingReviews(namespace)).entries,
+    },
+  );
+
+  assert.equal(namespace.records.has(oldPending.key), false);
+  assert.equal(namespace.records.has(currentPending.key), false);
+});
+
+test("closed webhook results defer queue cleanup to the scheduled snapshot", async () => {
+  const namespace = new FakePendingReviews();
+  await trackPendingReview(namespace, ref, {
+    sha: "same-head",
+    generation: "request:10",
+    state: "pending",
+  });
+  await trackPendingReview(namespace, ref, {
+    sha: "same-head",
+    generation: "request:11",
+    state: "pending",
+  });
+
+  const result = await trackPendingReview(namespace, ref, {
+    sha: "same-head",
+    generation: "request:11",
+    state: "pending",
+    prState: "closed",
+  });
+
+  assert.equal(result.action, "deferred");
+  assert.equal(namespace.records.size, 2);
+});
+
+test("scheduled settlement clears every generation after a PR closes", async () => {
+  const namespace = new FakePendingReviews();
+  const oldPending = await trackPendingReview(namespace, ref, {
+    sha: "same-head",
+    generation: "request:10",
+    state: "pending",
+  });
+  await trackPendingReview(namespace, ref, {
+    sha: "same-head",
+    generation: "request:11",
+    state: "pending",
+  });
+
+  await settlePendingReview(
+    namespace,
+    pendingReviewEntry({ name: oldPending.key }),
+    {
+      sha: "same-head",
+      generation: "request:10",
+      state: "pending",
+      prState: "closed",
+    },
+    {
+      observedEntries: (await listPendingReviews(namespace)).entries,
+    },
+  );
+
+  assert.equal(namespace.records.size, 0);
+});
+
+test("terminal settlement preserves pending revisions created after its snapshot", async () => {
+  const namespace = new FakePendingReviews();
+  const first = await trackPendingReview(
+    namespace,
+    ref,
+    {
+      sha: "same-head",
+      generation: "request:11",
+      state: "pending",
+    },
+    { revision: "before-evaluation" },
+  );
+  const observedEntries = (await listPendingReviews(namespace)).entries;
+  const concurrent = await trackPendingReview(
+    namespace,
+    ref,
+    {
+      sha: "same-head",
+      generation: "request:11",
+      state: "pending",
+    },
+    { revision: "after-evaluation" },
+  );
+
+  await settlePendingReview(
+    namespace,
+    pendingReviewEntry({ name: first.key }),
+    {
+      sha: "same-head",
+      generation: "request:11",
+      state: "failure",
+    },
+    { observedEntries },
+  );
+
+  assert.equal(namespace.records.has(first.key), false);
+  assert.equal(namespace.records.has(concurrent.key), true);
+});
+
+test("pending settlement compacts only revisions captured in its snapshot", async () => {
+  const namespace = new FakePendingReviews();
+  const kept = await trackPendingReview(
+    namespace,
+    ref,
+    {
+      sha: "same-head",
+      generation: "request:11",
+      state: "pending",
+    },
+    { revision: "first-before-evaluation" },
+  );
+  const duplicate = await trackPendingReview(
+    namespace,
+    ref,
+    {
+      sha: "same-head",
+      generation: "request:11",
+      state: "pending",
+    },
+    { revision: "second-before-evaluation" },
+  );
+  const observedEntries = (await listPendingReviews(namespace)).entries;
+  const concurrent = await trackPendingReview(
+    namespace,
+    ref,
+    {
+      sha: "same-head",
+      generation: "request:11",
+      state: "pending",
+    },
+    { revision: "after-evaluation" },
+  );
+
+  await settlePendingReview(
+    namespace,
+    pendingReviewEntry({ name: kept.key }),
+    {
+      sha: "same-head",
+      generation: "request:11",
+      state: "pending",
+    },
+    { observedEntries },
+  );
+
+  assert.equal(namespace.records.has(kept.key), true);
+  assert.equal(namespace.records.has(duplicate.key), false);
+  assert.equal(namespace.records.has(concurrent.key), true);
 });
 
 test("pending review listing follows KV cursors", async () => {

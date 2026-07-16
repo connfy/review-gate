@@ -5,6 +5,7 @@ import {
   maybeRetryReviewStart,
   runScheduledSweep,
   shouldReportStatus,
+  sweepOpenPullRequests,
   sweepPendingPullRequests,
 } from "../src/index.js";
 import { pendingReviewKey } from "../src/pending.js";
@@ -322,6 +323,59 @@ test("scheduled orchestration keeps separate pending and fallback budgets", asyn
   assert.equal(summary.updated, 1);
   assert.equal(summary.unchanged, 2);
   assert.equal("processedRefs" in summary.pending, false);
+});
+
+test("open fallback backfills candidates excluded by the pending sweep", async () => {
+  const requestedLimits = [];
+  const evaluatedPullRequests = [];
+  const summary = await sweepOpenPullRequests(
+    {
+      GITHUB_APP_ID: "app-id",
+      GITHUB_APP_PRIVATE_KEY: "private-key",
+    },
+    { statusContext: "review-gate/codex-clean" },
+    {
+      maxInstallations: 1,
+      maxRepositories: 1,
+      maxPullRequests: 2,
+      pageSpan: 10,
+      rotationSeed: 0,
+      excludedPullRequests: new Set([
+        "connfy/review-gate#1",
+        "connfy/review-gate#2",
+      ]),
+      listInstallations: async () => [{ id: 42 }],
+      getInstallationToken: async () => "installation-token",
+      listRepositories: async () => [
+        { owner: { login: "connfy" }, name: "review-gate" },
+      ],
+      clientFactory: () => ({
+        async openPullRequests({ limit }) {
+          requestedLimits.push(limit);
+          return [1, 2, 3, 4].map((number) => ({ number }));
+        },
+        async latestStatusForContext() {
+          return null;
+        },
+      }),
+      evaluate: async (_client, { prNumber }) => {
+        evaluatedPullRequests.push(prNumber);
+        return {
+          sha: `head-${prNumber}`,
+          generation: `head-${prNumber}`,
+          prState: "open",
+          state: "success",
+          description: "Review gate passed.",
+        };
+      },
+      reportStatus: async () => {},
+    },
+  );
+
+  assert.deepEqual(requestedLimits, [4]);
+  assert.deepEqual(evaluatedPullRequests, [3, 4]);
+  assert.equal(summary.pullRequests, 2);
+  assert.equal(summary.updated, 2);
 });
 
 test("scheduled pending sweep does not spend two slots on stale heads of one PR", async () => {

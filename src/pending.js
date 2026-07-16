@@ -15,6 +15,7 @@ function normalizedRef(ref, sha = ref?.sha) {
   const repo = String(ref?.repo ?? "");
   const normalizedSha = String(sha ?? "");
   const generation = String(ref?.generation ?? normalizedSha);
+  const revision = String(ref?.revision ?? generation);
 
   if (
     !Number.isInteger(installationId) ||
@@ -24,7 +25,8 @@ function normalizedRef(ref, sha = ref?.sha) {
     owner.length === 0 ||
     repo.length === 0 ||
     normalizedSha.length === 0 ||
-    generation.length === 0
+    generation.length === 0 ||
+    revision.length === 0
   ) {
     return null;
   }
@@ -36,6 +38,7 @@ function normalizedRef(ref, sha = ref?.sha) {
     prNumber,
     sha: normalizedSha,
     generation,
+    revision,
   };
 }
 
@@ -49,8 +52,9 @@ export function pendingReviewKey(
   ref,
   sha = ref?.sha,
   generation = ref?.generation ?? sha,
+  revision = ref?.revision ?? generation,
 ) {
-  const normalized = normalizedRef({ ...ref, generation }, sha);
+  const normalized = normalizedRef({ ...ref, generation, revision }, sha);
   if (!normalized) {
     return null;
   }
@@ -64,6 +68,7 @@ export function pendingReviewKey(
       normalized.prNumber,
       encodeURIComponent(normalized.sha),
       encodeURIComponent(normalized.generation),
+      encodeURIComponent(normalized.revision),
     ].join(":")
   );
 }
@@ -80,7 +85,7 @@ export function pendingReviewEntry(key) {
   }
 
   const parts = name.slice(PENDING_REVIEW_KEY_PREFIX.length).split(":");
-  if (parts.length !== 6) {
+  if (parts.length !== 6 && parts.length !== 7) {
     return null;
   }
 
@@ -88,11 +93,14 @@ export function pendingReviewEntry(key) {
   let repo;
   let sha;
   let generation;
+  let revision;
   try {
     owner = decodeURIComponent(parts[1]);
     repo = decodeURIComponent(parts[2]);
     sha = decodeURIComponent(parts[4]);
     generation = decodeURIComponent(parts[5]);
+    revision =
+      parts.length === 7 ? decodeURIComponent(parts[6]) : generation;
   } catch {
     return null;
   }
@@ -104,6 +112,7 @@ export function pendingReviewEntry(key) {
     prNumber: Number(parts[3]),
     sha,
     generation,
+    revision,
   });
   return ref ? { key: name, ref } : null;
 }
@@ -148,15 +157,21 @@ export async function trackPendingReview(namespace, ref, result, options = {}) {
   }
 
   const generation = result?.generation ?? result?.sha;
-  const key = pendingReviewKey(ref, result?.sha, generation);
-  if (!key) {
-    throw new Error(
-      "cannot track a pending review without a complete PR ref and SHA",
+  if (
+    String(result?.prState ?? "open") === "open" &&
+    String(result?.state ?? "") === "pending"
+  ) {
+    const revision = String(options.revision ?? crypto.randomUUID());
+    const key = pendingReviewKey(ref, result?.sha, generation, revision);
+    if (!key) {
+      throw new Error(
+        "cannot track a pending review without a complete PR ref and SHA",
+      );
+    }
+    const metadata = normalizedRef(
+      { ...ref, generation, revision },
+      result.sha,
     );
-  }
-
-  if (String(result?.state ?? "") === "pending") {
-    const metadata = normalizedRef({ ...ref, generation }, result.sha);
     await namespace.put(key, "", {
       expirationTtl: Math.max(
         60,
@@ -173,8 +188,10 @@ export async function trackPendingReview(namespace, ref, result, options = {}) {
     return { enabled: true, action: "put", key };
   }
 
-  await namespace.delete(key);
-  return { enabled: true, action: "delete", key };
+  // A terminal or closed webhook cannot safely delete after evaluation because
+  // a newer pending write may have raced with it. The scheduled sweep deletes
+  // only queue revisions captured before its GitHub evaluation.
+  return { enabled: true, action: "deferred", key: null };
 }
 
 export async function settlePendingReview(
@@ -187,20 +204,62 @@ export async function settlePendingReview(
     return { action: "none" };
   }
 
-  const latestKey = pendingReviewKey(
-    queuedEntry?.ref,
-    result?.sha,
-    result?.generation ?? result?.sha,
-  );
-  if (String(result?.state ?? "") === "pending") {
-    if (latestKey && latestKey !== queuedEntry.key) {
-      await trackPendingReview(namespace, queuedEntry.ref, result, options);
+  const observedEntries = options.observedEntries ?? [queuedEntry];
+  const queuedIdentity = pendingReviewIdentity(queuedEntry?.ref);
+  if (
+    String(result?.prState ?? "open") === "open" &&
+    String(result?.state ?? "") === "pending"
+  ) {
+    const generation = String(result?.generation ?? result?.sha ?? "");
+    const sha = String(result?.sha ?? "");
+    const matchingObservedEntries = observedEntries.filter(
+      (entry) =>
+        pendingReviewIdentity(entry?.ref) === queuedIdentity &&
+        entry?.ref?.sha === sha &&
+        entry?.ref?.generation === generation,
+    );
+    if (
+      sha !== queuedEntry?.ref?.sha ||
+      generation !== queuedEntry?.ref?.generation
+    ) {
+      const matchingEntry = matchingObservedEntries[0];
+      const tracked = matchingEntry
+        ? { key: matchingEntry.key }
+        : await trackPendingReview(
+            namespace,
+            queuedEntry.ref,
+            result,
+            options,
+          );
       await namespace.delete(queuedEntry.key);
-      return { action: "requeued", key: latestKey };
+      await Promise.all(
+        matchingObservedEntries
+          .filter((entry) => entry.key !== tracked.key)
+          .map((entry) => namespace.delete(entry.key)),
+      );
+      return { action: "requeued", key: tracked.key };
     }
+    await Promise.all(
+      matchingObservedEntries
+        .filter((entry) => entry.key !== queuedEntry.key)
+        .map((entry) => namespace.delete(entry.key)),
+    );
     return { action: "kept", key: queuedEntry.key };
   }
 
-  await namespace.delete(queuedEntry.key);
+  const resultGeneration = String(result?.generation ?? result?.sha ?? "");
+  const keysToDelete = new Set([queuedEntry.key]);
+  for (const entry of observedEntries) {
+    if (pendingReviewIdentity(entry?.ref) !== queuedIdentity) {
+      continue;
+    }
+    if (
+      String(result?.prState ?? "open") !== "open" ||
+      entry?.ref?.generation === resultGeneration
+    ) {
+      keysToDelete.add(entry.key);
+    }
+  }
+  await Promise.all([...keysToDelete].map((key) => namespace.delete(key)));
   return { action: "removed", key: queuedEntry.key };
 }
