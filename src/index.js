@@ -17,6 +17,13 @@ import {
   shouldIgnoreEvent,
   verifySignature,
 } from "./webhook.js";
+import {
+  DEFAULT_PENDING_REVIEW_TTL_SECONDS,
+  listPendingReviews,
+  pendingReviewIdentity,
+  settlePendingReview,
+  trackPendingReview,
+} from "./pending.js";
 
 const CLEAN_COMMENT_RETRY_DELAY_MS = 3_000;
 const REVIEW_START_RETRY_DELAY_MS = 15_000;
@@ -24,8 +31,10 @@ const REVIEW_PENDING_RETRY_INTERVAL_MS = 7_000;
 const REVIEW_PENDING_RETRY_ATTEMPTS = 0;
 const SWEEP_MAX_INSTALLATIONS = 10;
 const SWEEP_MAX_REPOSITORIES = 4;
+const SWEEP_MAX_PENDING_PULL_REQUESTS = 2;
 const SWEEP_MAX_PULL_REQUESTS = 2;
 const SWEEP_PAGE_SPAN = 10;
+const PENDING_REVIEW_TTL_SECONDS = DEFAULT_PENDING_REVIEW_TTL_SECONDS;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -180,6 +189,24 @@ async function reportStatus(client, result) {
   });
 }
 
+async function trackPendingReviewSafely(env, ref, result) {
+  try {
+    await trackPendingReview(env.PENDING_REVIEWS, ref, result, {
+      expirationTtl: parsePositiveInteger(
+        env.PENDING_REVIEW_TTL_SECONDS,
+        PENDING_REVIEW_TTL_SECONDS,
+      ),
+    });
+    return true;
+  } catch (error) {
+    console.error(
+      `pending review tracking failed for ${ref.owner}/${ref.repo}#${ref.prNumber}:`,
+      error,
+    );
+    return false;
+  }
+}
+
 export function shouldReportStatus(currentStatus, result) {
   if (!currentStatus) {
     return true;
@@ -222,7 +249,142 @@ async function evaluateAndReport(env, ref, config, options = {}) {
       options.reviewPendingRetryAttempts ?? REVIEW_PENDING_RETRY_ATTEMPTS,
   });
 
+  await trackPendingReviewSafely(env, ref, result);
+
   return result;
+}
+
+function emptyOpenSweepSummary() {
+  return {
+    installations: 0,
+    repositories: 0,
+    pullRequests: 0,
+    updated: 0,
+    unchanged: 0,
+    errors: 0,
+    limited: false,
+  };
+}
+
+export async function sweepPendingPullRequests(env, config, options = {}) {
+  const maxPullRequests =
+    options.maxPullRequests ??
+    parsePositiveInteger(
+      env.SWEEP_MAX_PENDING_PULL_REQUESTS,
+      SWEEP_MAX_PENDING_PULL_REQUESTS,
+    );
+  const rotationSeed =
+    options.rotationSeed ?? Math.floor(Date.now() / (3 * 60 * 1000));
+  const installationTokenFor =
+    options.getInstallationToken ?? getCachedInstallationToken;
+  const clientFor =
+    options.clientFactory ??
+    ((token, owner, repo) =>
+      new RepoClient(token, owner, repo, config.statusContext));
+  const evaluate = options.evaluate ?? evaluateFromGitHub;
+  const report = options.reportStatus ?? reportStatus;
+  const summary = {
+    enabled: Boolean(env.PENDING_REVIEWS?.list),
+    queued: 0,
+    pullRequests: 0,
+    updated: 0,
+    unchanged: 0,
+    removed: 0,
+    requeued: 0,
+    errors: 0,
+    limited: false,
+    processedRefs: [],
+  };
+
+  if (!summary.enabled || maxPullRequests <= 0) {
+    return summary;
+  }
+
+  let listing;
+  try {
+    listing = await listPendingReviews(env.PENDING_REVIEWS);
+  } catch (error) {
+    summary.errors += 1;
+    console.error("scheduled pending sweep failed to list queued reviews:", error);
+    return summary;
+  }
+
+  const rotatedEntries = rotateList(
+    listing.entries,
+    rotationSeed,
+    "pending-review-order",
+  );
+  const observedEntriesByPullRequest = new Map();
+  for (const observedEntry of listing.entries) {
+    const identity = pendingReviewIdentity(observedEntry.ref);
+    const entriesForPullRequest =
+      observedEntriesByPullRequest.get(identity) ?? [];
+    entriesForPullRequest.push(observedEntry);
+    observedEntriesByPullRequest.set(identity, entriesForPullRequest);
+  }
+  const seenPullRequests = new Set();
+  const entries = rotatedEntries.filter((entry) => {
+    const identity = pendingReviewIdentity(entry.ref);
+    if (seenPullRequests.has(identity)) {
+      return false;
+    }
+    seenPullRequests.add(identity);
+    return true;
+  });
+  summary.queued = listing.entries.length;
+  summary.limited = !listing.listComplete || entries.length > maxPullRequests;
+
+  for (const entry of entries.slice(0, maxPullRequests)) {
+    const { installationId, owner, repo, prNumber } = entry.ref;
+    summary.pullRequests += 1;
+    try {
+      const token = await installationTokenFor(
+        env.GITHUB_APP_ID,
+        env.GITHUB_APP_PRIVATE_KEY,
+        installationId,
+      );
+      const client = clientFor(token, owner, repo);
+      const result = await evaluate(client, { prNumber }, config);
+      const currentStatus = await client.latestStatusForContext(result.sha);
+      if (shouldReportStatus(currentStatus, result)) {
+        await report(client, result);
+        summary.updated += 1;
+      } else {
+        summary.unchanged += 1;
+      }
+
+      const settlement = await settlePendingReview(
+        env.PENDING_REVIEWS,
+        entry,
+        result,
+        {
+          observedEntries: observedEntriesByPullRequest.get(
+            pendingReviewIdentity(entry.ref),
+          ),
+          expirationTtl: parsePositiveInteger(
+            env.PENDING_REVIEW_TTL_SECONDS,
+            PENDING_REVIEW_TTL_SECONDS,
+          ),
+        },
+      );
+      if (settlement.action === "removed") {
+        summary.removed += 1;
+      } else if (settlement.action === "requeued") {
+        summary.requeued += 1;
+      }
+      summary.processedRefs.push(
+        pendingReviewIdentity({ owner, repo, prNumber }),
+      );
+    } catch (error) {
+      summary.errors += 1;
+      console.error(
+        `scheduled pending sweep failed for ${owner}/${repo}#${prNumber}:`,
+        error,
+      );
+    }
+  }
+
+  return summary;
 }
 
 export async function sweepOpenPullRequests(env, config, options = {}) {
@@ -241,9 +403,21 @@ export async function sweepOpenPullRequests(env, config, options = {}) {
   const rotationSeed =
     options.rotationSeed ?? Math.floor(Date.now() / (3 * 60 * 1000));
   const orderSeed = Math.floor(rotationSeed / pageSpan);
+  const excludedPullRequests = options.excludedPullRequests ?? new Set();
+  const listInstallations = options.listInstallations ?? listAppInstallations;
+  const installationTokenFor =
+    options.getInstallationToken ?? getCachedInstallationToken;
+  const listRepositories =
+    options.listRepositories ?? listInstallationRepositories;
+  const clientFor =
+    options.clientFactory ??
+    ((token, owner, repo) =>
+      new RepoClient(token, owner, repo, config.statusContext));
+  const evaluate = options.evaluate ?? evaluateFromGitHub;
+  const report = options.reportStatus ?? reportStatus;
 
   const installations = rotateList(
-    await listAppInstallations(
+    await listInstallations(
       env.GITHUB_APP_ID,
       env.GITHUB_APP_PRIVATE_KEY,
       {
@@ -291,13 +465,13 @@ export async function sweepOpenPullRequests(env, config, options = {}) {
     let token;
     let repositories;
     try {
-      token = await getCachedInstallationToken(
+      token = await installationTokenFor(
         env.GITHUB_APP_ID,
         env.GITHUB_APP_PRIVATE_KEY,
         installationId,
       );
       repositories = rotateList(
-        await listInstallationRepositories(token, {
+        await listRepositories(token, {
           limit: repositoryLimit,
           pageOffset: pageOffsetFor(
             rotationSeed,
@@ -339,7 +513,7 @@ export async function sweepOpenPullRequests(env, config, options = {}) {
         continue;
       }
 
-      repositoriesToSweep.push({ token, owner, repo });
+      repositoriesToSweep.push({ token, installationId, owner, repo });
       summary.repositories += 1;
     }
   }
@@ -356,22 +530,24 @@ export async function sweepOpenPullRequests(env, config, options = {}) {
       break;
     }
 
-    const { token, owner, repo } = repositories[index];
-    const client = new RepoClient(token, owner, repo, config.statusContext);
+    const { token, installationId, owner, repo } = repositories[index];
+    const client = clientFor(token, owner, repo);
     const remainingRepositories = repositories.length - index;
     const remainingPullRequestBudget = maxPullRequests - summary.pullRequests;
     const pullRequestLimit = Math.max(
       1,
       Math.ceil(remainingPullRequestBudget / remainingRepositories),
     );
+    const candidatePullRequestLimit =
+      pullRequestLimit + excludedPullRequests.size;
     let pulls = [];
     try {
       pulls = await client.openPullRequests({
-        limit: pullRequestLimit,
+        limit: candidatePullRequestLimit,
         pageOffset: pageOffsetFor(rotationSeed, pageSpan, "pulls", owner, repo),
         pageCursor: pageCursorFor(rotationSeed, "pulls", owner, repo),
       });
-      if (pulls.length >= pullRequestLimit) {
+      if (pulls.length >= candidatePullRequestLimit) {
         summary.limited = true;
       }
     } catch (error) {
@@ -385,21 +561,39 @@ export async function sweepOpenPullRequests(env, config, options = {}) {
         summary.limited = true;
         break;
       }
+      const pullIdentity = pendingReviewIdentity({
+        owner,
+        repo,
+        prNumber: pull.number,
+      });
+      if (excludedPullRequests.has(pullIdentity)) {
+        continue;
+      }
       summary.pullRequests += 1;
 
       try {
-        const result = await evaluateFromGitHub(
+        const result = await evaluate(
           client,
           { prNumber: Number(pull.number) },
           config,
         );
         const currentStatus = await client.latestStatusForContext(result.sha);
         if (shouldReportStatus(currentStatus, result)) {
-          await reportStatus(client, result);
+          await report(client, result);
           summary.updated += 1;
         } else {
           summary.unchanged += 1;
         }
+        await trackPendingReviewSafely(
+          env,
+          {
+            installationId,
+            owner,
+            repo,
+            prNumber: Number(pull.number),
+          },
+          result,
+        );
       } catch (error) {
         summary.errors += 1;
         console.error(
@@ -411,6 +605,46 @@ export async function sweepOpenPullRequests(env, config, options = {}) {
   }
 
   return summary;
+}
+
+export async function runScheduledSweep(env, config, options = {}) {
+  const maxPendingPullRequests =
+    options.maxPendingPullRequests ??
+    parsePositiveInteger(
+      env.SWEEP_MAX_PENDING_PULL_REQUESTS,
+      SWEEP_MAX_PENDING_PULL_REQUESTS,
+    );
+  const maxOpenPullRequests =
+    options.maxPullRequests ??
+    parsePositiveInteger(env.SWEEP_MAX_PULL_REQUESTS, SWEEP_MAX_PULL_REQUESTS);
+  const rotationSeed =
+    options.rotationSeed ?? Math.floor(Date.now() / (3 * 60 * 1000));
+  const pendingSweep = options.pendingSweep ?? sweepPendingPullRequests;
+  const openSweep = options.openSweep ?? sweepOpenPullRequests;
+  const pending = await pendingSweep(env, config, {
+    maxPullRequests: maxPendingPullRequests,
+    rotationSeed,
+  });
+  const open =
+    maxOpenPullRequests > 0
+      ? await openSweep(env, config, {
+          ...options,
+          rotationSeed,
+          maxPullRequests: maxOpenPullRequests,
+          excludedPullRequests: new Set(pending.processedRefs),
+        })
+      : emptyOpenSweepSummary();
+
+  const { processedRefs: _processedRefs, ...pendingSummary } = pending;
+  return {
+    pending: pendingSummary,
+    open,
+    pullRequests: pending.pullRequests + open.pullRequests,
+    updated: pending.updated + open.updated,
+    unchanged: pending.unchanged + open.unchanged,
+    errors: pending.errors + open.errors,
+    limited: pending.limited || open.limited,
+  };
 }
 
 export async function maybeRetryReviewStart({
@@ -507,7 +741,7 @@ async function evaluateFromGitHub(client, ref, config) {
 
 export default {
   async scheduled(controller, env, _ctx) {
-    const summary = await sweepOpenPullRequests(env, configFromEnv(env), {
+    const summary = await runScheduledSweep(env, configFromEnv(env), {
       rotationSeed: Math.floor(
         Number(controller?.scheduledTime ?? Date.now()) / (3 * 60 * 1000),
       ),
