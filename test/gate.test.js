@@ -198,6 +198,7 @@ test("review request eyes reaction from review bot is pending", () => {
     ],
   });
   assert.equal(result.state, "pending");
+  assert.equal(result.generation, "request:10");
   assert.equal(result.description, REVIEW_IN_PROGRESS_DESCRIPTION);
   assert.match(result.details[0], /review request eyes reaction/);
 });

@@ -20,6 +20,8 @@ Review Gate는 딱 그 애매한 순간을 없애주는 작은 도구예요. Cod
 
 - 기본은 이벤트 기반이고, GitHub가 따로 깨워주지 않는 PR 본문 반응만 가벼운 예약
   재확인으로 보완합니다. 같은 PR을 보려고 GitHub Actions 시간을 태우지는 않습니다.
+- 진행 중인 리뷰는 Workers KV 우선 큐에 기록해서 전체 저장소 회전보다 먼저 확인합니다.
+  설치된 저장소가 많아져도 `pending` PR의 대기 시간이 함께 늘어나지 않습니다.
 - 도구 하나만 띄워두면 저장소 수십 개를 한꺼번에 관리할 수 있어요.
 - 새 코드를 올리면 통과 표시가 알아서 다시 빨간불로 돌아갑니다. 옛날에 받은 통과를
   믿고 실수로 합치는 일이 없어요.
@@ -59,9 +61,10 @@ Review Gate는 딱 그 애매한 순간을 없애주는 작은 도구예요. Cod
 참고로 GitHub는 PR 본문 반응을 별도 알림으로 보내주지는 않아요. 대신 Review Gate는 다른
 PR/리뷰/코멘트 알림 때문에 PR을 다시 계산할 때, GitHub의 issue reactions API로 PR 본문
 반응을 같이 읽습니다. 또 PR 생성이나 리뷰 요청 직후에는 짧게 한 번 더 확인해서, 늦게 붙는
-`eyes` 반응도 실패가 아니라 진행 중 상태로 바뀔 수 있게 합니다. 그리고 예약 sweep이 열린
-PR을 가볍게 다시 계산해서, 늦게 붙은 PR 본문 `+1`만으로도 다음 sweep에서 초록불로 바뀔 수
-있게 합니다.
+`eyes` 반응도 실패가 아니라 진행 중 상태로 바뀔 수 있게 합니다. 진행 중인 PR의 `head`는
+Workers KV에 기록되고 예약 sweep에서 가장 먼저 다시 계산됩니다. 그래서 뒤따르는 webhook이
+없어도 늦게 붙은 PR 본문 `+1`을 우선 sweep에서 발견할 수 있습니다. `pending` 큐에 들어오지
+않은 PR은 기존의 열린 PR 회전 sweep이 안전망 역할을 하며 계속 확인합니다.
 
 ## 설치하기 (생각보다 금방 끝나요)
 
@@ -124,6 +127,10 @@ npx wrangler secret put GITHUB_WEBHOOK_SECRET
 npx wrangler secret put GITHUB_APP_PRIVATE_KEY
 npx wrangler deploy
 ```
+
+Wrangler 4.45 이상으로 배포하면 `wrangler.toml`에 선언된 `PENDING_REVIEWS` Workers KV
+네임스페이스도 자동으로 준비됩니다. Cloudflare 대시보드나 Git 연동으로 배포하면 생성된
+리소스 ID는 저장소에 다시 기록하지 않고 Cloudflare 쪽에만 보관됩니다.
 
 `wrangler secret put`을 실행하면 값을 붙여넣으라고 물어봐요. 각각 이렇게 넣어주세요.
 
@@ -191,9 +198,11 @@ GitHub가 아예 합치기 버튼을 못 누르게 막아주길 원한다면, �
 | `REVIEW_START_RETRY_DELAY_MS` | `15000` | PR 생성/리뷰 요청 직후 늦게 붙는 `eyes`를 다시 확인하기 전 기다리는 시간 |
 | `REVIEW_PENDING_RETRY_INTERVAL_MS` | `7000` | 진행 중 리뷰에서 선택적 웹훅 내부 재확인 사이에 기다리는 시간 |
 | `REVIEW_PENDING_RETRY_ATTEMPTS` | `0` | 웹훅 작업 안에서 진행할 최대 pending 재확인 횟수. 늦은 PR 본문 `+1`은 예약 sweep이 잡기 때문에 기본값은 꺼져 있습니다. |
+| `PENDING_REVIEW_TTL_SECONDS` | `86400` | `pending` PR의 `head`가 자동 만료되기 전까지 KV 우선 큐에 남는 시간(초) |
 | `SWEEP_MAX_INSTALLATIONS` | `10` | 예약 sweep 한 번에서 확인할 GitHub App 설치 수 상한 |
 | `SWEEP_MAX_REPOSITORIES` | `4` | 예약 sweep 한 번에서 확인할 저장소 수 상한 |
-| `SWEEP_MAX_PULL_REQUESTS` | `2` | 예약 sweep 한 번에서 평가할 열린 PR 수 상한 |
+| `SWEEP_MAX_PENDING_PULL_REQUESTS` | `2` | 예약 sweep 한 번에서 평가할 KV `pending` PR 수의 별도 상한 |
+| `SWEEP_MAX_PULL_REQUESTS` | `2` | 안전망 sweep에서 평가할 열린 PR 수 상한. `pending` 작업과 공유하지 않음 |
 | `SWEEP_PAGE_SPAN` | `10` | 예약 sweep의 초기 페이지 probe 창. GitHub가 마지막 페이지를 알려주면 전체 목록을 돌려가며 봅니다. |
 
 기본 cron은 `wrangler.toml`에서 3분마다 실행되도록 잡혀 있습니다.
@@ -203,10 +212,19 @@ GitHub가 아예 합치기 버튼을 못 누르게 막아주길 원한다면, �
 crons = [ "*/3 * * * *" ]
 ```
 
-기본 상한은 작은 Worker 플랜에서도 무리하지 않도록 보수적으로 잡았습니다. 설치 규모가 크면
-상한을 올릴 수 있고, 예약 sweep은 설치, 저장소, PR, 페이지 창을 돌려가며 보므로 cap이
-걸려도 매번 같은 첫 페이지만 보지는 않습니다. `SWEEP_PAGE_SPAN`은 첫 probe만 제한하고,
-GitHub pagination 정보가 있으면 더 큰 목록도 시간이 지나며 뒤 페이지까지 진행합니다.
+예약 실행은 KV에 기록된 `pending` PR과 열린 PR 안전망에 별도 예산을 사용합니다. 오래
+걸리는 `pending` 리뷰가 있어도 안전망 sweep은 굶지 않습니다. 기본 상한은 Cloudflare
+비용보다 GitHub App 설치 토큰의 API 호출 제한을 보호하도록 보수적으로 잡았습니다. 두
+경로 모두 대상을 회전하므로 상한에 걸려도 매번 같은 항목만 보지는 않습니다.
+
+3분 간격에서 큐가 한 페이지면 KV `list`는 월 약 14,400회입니다. cursor 순회는 최대
+10페이지로 제한하므로 구현상 상한은 월 약 144,000회이며, 이 역시 Workers Paid 포함량보다
+훨씬 적습니다. 큐 정보는 KV 메타데이터에 넣으므로 PR마다 별도 KV `read`를 하지 않습니다.
+
+## 구조와 기술 결정
+
+모듈과 데이터 흐름은 [Architecture](docs/architecture.md)에 정리되어 있습니다. 주요 선택과
+트레이드오프는 [docs/decisions](docs/decisions/) 아래 ADR에 기록합니다.
 
 비밀값은 `wrangler secret put` 명령으로 Cloudflare에 따로 저장합니다.
 

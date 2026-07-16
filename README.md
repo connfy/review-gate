@@ -22,6 +22,8 @@ Why you'll want it:
 - Event-first, with a light scheduled sweep for the one thing GitHub does not
   reliably wake us for: PR body reactions. No GitHub Actions minutes are burned
   watching the same PR.
+- Pending reviews are queued in Workers KV and checked before the broad fallback
+  sweep, so latency does not grow with the number of installed repositories.
 - One Worker plus one GitHub App covers dozens of repositories at once.
 - Push a new commit and the status automatically resets to red. No more
   accidental merges on stale approvals.
@@ -63,8 +65,11 @@ and treats this line plus a PR-body `+1` as clean signals:
 Heads up: GitHub exposes PR body reactions through the issue reactions API, not
 as a standalone reaction webhook. Review Gate reads them whenever another PR,
 review, or issue-comment webhook causes the PR to be re-evaluated. It also runs
-a small scheduled sweep over open PRs so a late PR-body `+1` can flip the status
-to green even when no comment/review webhook follows.
+a small scheduled sweep. PR heads that are already pending are recorded in
+Workers KV and checked first, so a late PR-body `+1` can flip the status to green
+on a priority sweep even when no comment/review webhook follows. A rotating scan
+of other open PRs remains as a fallback for signals that never entered the
+pending state.
 
 ## Setup (quicker than it looks)
 
@@ -127,6 +132,11 @@ npx wrangler secret put GITHUB_WEBHOOK_SECRET
 npx wrangler secret put GITHUB_APP_PRIVATE_KEY
 npx wrangler deploy
 ```
+
+Wrangler 4.45 or later automatically provisions the `PENDING_REVIEWS` Workers
+KV namespace declared in `wrangler.toml`. If you deploy from the Cloudflare
+dashboard or a Git integration, the generated resource ID stays in Cloudflare
+rather than being written back to this repository.
 
 Each `wrangler secret put` prompts you to paste a value. Fill them in like this:
 
@@ -199,9 +209,11 @@ different reviewer bot or change the trigger text.
 | `REVIEW_START_RETRY_DELAY_MS` | `15000` | Delay before re-checking a PR-open/review-request event for late `eyes`. |
 | `REVIEW_PENDING_RETRY_INTERVAL_MS` | `7000` | Delay between optional webhook-bound re-checks while the latest review is pending. |
 | `REVIEW_PENDING_RETRY_ATTEMPTS` | `0` | Maximum pending-review re-checks inside the webhook task. Disabled by default because scheduled sweeps catch late PR-body `+1` reactions. |
+| `PENDING_REVIEW_TTL_SECONDS` | `86400` | How long a pending PR head remains in the KV priority queue before automatic expiry. |
 | `SWEEP_MAX_INSTALLATIONS` | `10` | Safety cap for GitHub App installations checked per scheduled sweep. |
 | `SWEEP_MAX_REPOSITORIES` | `4` | Safety cap for repositories checked per scheduled sweep. |
-| `SWEEP_MAX_PULL_REQUESTS` | `2` | Safety cap for open PRs evaluated per scheduled sweep. |
+| `SWEEP_MAX_PENDING_PULL_REQUESTS` | `2` | Separate safety cap for KV-queued pending PRs evaluated per sweep. |
+| `SWEEP_MAX_PULL_REQUESTS` | `2` | Safety cap for fallback open PRs evaluated per sweep; pending work never consumes it. |
 | `SWEEP_PAGE_SPAN` | `10` | Initial page probe window for scheduled sweeps; when GitHub exposes the last page, the sweep rotates across the full list. |
 
 The default cron in `wrangler.toml` runs every three minutes:
@@ -211,12 +223,22 @@ The default cron in `wrangler.toml` runs every three minutes:
 crons = [ "*/3 * * * *" ]
 ```
 
-The conservative default caps are chosen to stay practical on small Worker
-plans. Larger installations can raise the caps, and the sweep rotates
-installations, repositories, pull requests, and paginated windows so capped runs
-do not always start in the same place. `SWEEP_PAGE_SPAN` keeps the first probe
-bounded, while GitHub pagination metadata lets larger lists advance beyond that
-initial window over time.
+Each scheduled run has separate budgets for KV-queued pending heads and the
+rotating open-PR fallback. Long-running pending reviews therefore cannot starve
+the fallback. The conservative default caps protect the GitHub App installation
+rate limit. Both paths rotate their candidates so capped runs do not always
+start in the same place.
+
+At a three-minute interval the priority queue performs about 14,400 KV list
+operations per month for a one-page queue. Cursor pagination is capped at ten
+pages, so the implementation ceiling is about 144,000 list operations per
+month, still below the Workers Paid included allowance. Queue records are stored
+in KV metadata, so the sweep does not need a separate KV read per PR.
+
+## Architecture and decisions
+
+See [Architecture](docs/architecture.md) for module and data-flow relationships.
+Major trade-offs are recorded under [docs/decisions](docs/decisions/).
 
 Secrets are stored separately in Cloudflare via `wrangler secret put`:
 

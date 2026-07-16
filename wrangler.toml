@@ -2,6 +2,12 @@ name = "review-gate"
 main = "src/index.js"
 compatibility_date = "2026-05-01"
 
+# Durable priority queue for PR heads that are waiting on a reaction-only
+# review result. Wrangler automatically provisions this KV namespace on deploy
+# when no resource ID is configured.
+[[kv_namespaces]]
+binding = "PENDING_REVIEWS"
+
 # Event-first gate with a light scheduled sweep. The sweep catches reaction-only
 # clean signals because GitHub does not emit a standalone PR body reaction
 # webhook.
@@ -25,9 +31,13 @@ REVIEW_REQUEST_TEXT = "@codex review"
 # late-reaction path is the scheduled sweep, so this is disabled by default.
 REVIEW_PENDING_RETRY_INTERVAL_MS = "7000"
 REVIEW_PENDING_RETRY_ATTEMPTS = "0"
+# Pending queue records expire automatically if a PR never emits another event.
+PENDING_REVIEW_TTL_SECONDS = "86400"
 # Safety caps for the scheduled sweep across GitHub App installations.
 SWEEP_MAX_INSTALLATIONS = "10"
 SWEEP_MAX_REPOSITORIES = "4"
+# Pending PRs have a separate budget so they cannot starve the fallback sweep.
+SWEEP_MAX_PENDING_PULL_REQUESTS = "2"
 SWEEP_MAX_PULL_REQUESTS = "2"
 SWEEP_PAGE_SPAN = "10"
 

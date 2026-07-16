@@ -156,6 +156,41 @@ function latestReviewRequestTime(issueComments, timelineEvents, config) {
   return latest;
 }
 
+function reviewGeneration(issueComments, timelineEvents, config) {
+  let latest = null;
+  const consider = (comment) => {
+    const timestamp = reviewRequestTimestamp(comment, config);
+    if (timestamp === null) {
+      return;
+    }
+    const numericId = Number(comment?.id);
+    const id = Number.isFinite(numericId) ? numericId : null;
+    if (
+      latest === null ||
+      timestamp > latest.timestamp ||
+      (timestamp === latest.timestamp && id !== null && id > (latest.id ?? -1))
+    ) {
+      latest = { timestamp, id };
+    }
+  };
+
+  for (const comment of issueComments) {
+    consider(comment);
+  }
+  for (const event of timelineEvents) {
+    if (event?.event === "commented") {
+      consider(event);
+    }
+  }
+
+  if (latest === null) {
+    return "head";
+  }
+  return latest.id === null
+    ? `request-time:${latest.timestamp}`
+    : `request:${latest.id}`;
+}
+
 function cleanReactionBoundary({ sha, issueComments, timelineEvents, config }) {
   const headBoundaryTime = latestHeadBoundaryTime(timelineEvents, sha);
   const requestBoundaryTime = latestReviewRequestTime(
@@ -541,6 +576,11 @@ export function evaluateGate({
   const resolved = resolveConfig(config);
   const prNumber = Number(pr.number);
   const sha = String(pr.head.sha);
+  const generation = reviewGeneration(
+    issueComments,
+    timelineEvents,
+    resolved,
+  );
   const details = [];
 
   if (pr.draft) {
@@ -597,6 +637,7 @@ export function evaluateGate({
       return {
         prNumber,
         sha,
+        generation,
         state: "pending",
         description: REVIEW_IN_PROGRESS_DESCRIPTION,
         details: inProgressEvents.map((event) => event.detail),
@@ -627,6 +668,7 @@ export function evaluateGate({
     return {
       prNumber,
       sha,
+      generation,
       state: "failure",
       description: summarizeFailureDetails(details),
       details,
@@ -636,6 +678,7 @@ export function evaluateGate({
   return {
     prNumber,
     sha,
+    generation,
     state: "success",
     description: "Review gate passed.",
     details: cleanEvents,
