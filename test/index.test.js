@@ -4,16 +4,19 @@ import { test } from "node:test";
 import {
   eventMayCreateSettledDisposition,
   maybeRetryReviewStart,
+  reevaluateSiblingsAfterMergedPullRequest,
   runScheduledSweep,
   shouldReportStatus,
   sweepOpenPullRequests,
   sweepPendingPullRequests,
 } from "../src/index.js";
+import { evaluateGate } from "../src/gate.js";
 import { pendingReviewKey } from "../src/pending.js";
 
 const settledConfig = { settledDispositionLogins: new Set(["connfy"]) };
 const settledSha = "abc123abc123abc123abc123abc123abc123abcd";
 const settledBaseSha = "def456def456def456def456def456def456def4";
+const advancedBaseSha = "fedcba9876543210fedcba9876543210fedcba98";
 
 function settledCommentEvent({
   user = "connfy",
@@ -26,6 +29,51 @@ function settledCommentEvent({
     issue: { number: 11, pull_request: { url: "x" } },
     comment: { user: { login: user, type }, body },
   };
+}
+
+function evaluateSettledDispositionAtBase(baseSha) {
+  const request = {
+    id: 10,
+    user: { login: "reviewer", type: "User" },
+    body: "@codex review",
+    created_at: "2026-08-02T00:01:00Z",
+  };
+  const disposition = {
+    id: 20,
+    user: { login: "connfy", type: "User" },
+    body: `@review-gate settle ${settledSha} ${settledBaseSha}`,
+    created_at: "2026-08-02T00:03:00Z",
+    html_url: "https://github.com/connfy/review-gate/pull/12#issuecomment-20",
+  };
+
+  return evaluateGate({
+    pr: {
+      number: 12,
+      draft: false,
+      state: "open",
+      head: { sha: settledSha },
+      base: { sha: baseSha },
+    },
+    issueComments: [request, disposition],
+    reviews: [
+      {
+        user: { login: "chatgpt-codex-connector[bot]" },
+        submitted_at: "2026-08-02T00:02:00Z",
+        commit_id: settledSha,
+        state: "COMMENTED",
+      },
+    ],
+    timelineEvents: [
+      {
+        event: "committed",
+        sha: settledSha,
+        author: { date: "2026-08-02T00:00:00Z" },
+      },
+      { event: "commented", ...request },
+      { event: "commented", ...disposition },
+    ],
+    config: settledConfig,
+  });
 }
 
 test("created exact settled-disposition arms the bounded propagation retry", () => {
@@ -72,6 +120,113 @@ test("only a newly created, well-formed, allowlisted human disposition arms the 
     eventMayCreateSettledDisposition("issue_comment", settledCommentEvent(), {}),
     false,
   );
+});
+
+test("merged close reevaluates a same-base sibling and invalidates its stale disposition", async () => {
+  const reevaluations = [];
+  assert.equal(evaluateSettledDispositionAtBase(settledBaseSha).state, "success");
+
+  const pullRequests = await reevaluateSiblingsAfterMergedPullRequest(
+    {
+      GITHUB_APP_ID: "app-id",
+      GITHUB_APP_PRIVATE_KEY: "private-key",
+    },
+    "pull_request",
+    {
+      action: "closed",
+      repository: { owner: { login: "connfy" }, name: "review-gate" },
+      installation: { id: 42 },
+      pull_request: {
+        number: 9,
+        merged: true,
+        base: { ref: "main" },
+      },
+    },
+    { statusContext: "review-gate/codex-clean" },
+    {
+      getInstallationToken: async () => "installation-token",
+      clientFactory: () => ({
+        async openPullRequests() {
+          return [
+            { number: 9, base: { ref: "main" } },
+            { number: 12, base: { ref: "main" } },
+            { number: 13, base: { ref: "release" } },
+          ];
+        },
+      }),
+      evaluateAndReport: async (_env, ref) => {
+        reevaluations.push({
+          ref,
+          result: evaluateSettledDispositionAtBase(advancedBaseSha),
+        });
+      },
+    },
+  );
+
+  assert.deepEqual(pullRequests, [12]);
+  assert.equal(reevaluations.length, 1);
+  assert.equal(reevaluations[0].ref.prNumber, 12);
+  assert.equal(reevaluations[0].result.state, "failure");
+  assert.equal(reevaluations[0].result.baseSha, advancedBaseSha);
+});
+
+test("non-merged close does not trigger sibling reevaluation", async () => {
+  const pullRequests = await reevaluateSiblingsAfterMergedPullRequest(
+    {},
+    "pull_request",
+    {
+      action: "closed",
+      repository: { owner: { login: "connfy" }, name: "review-gate" },
+      installation: { id: 42 },
+      pull_request: {
+        number: 9,
+        merged: false,
+        base: { ref: "main" },
+      },
+    },
+    {},
+    {
+      getInstallationToken: async () => {
+        throw new Error("unexpected token request");
+      },
+    },
+  );
+
+  assert.deepEqual(pullRequests, []);
+});
+
+test("merged close leaves pull requests on a different base untouched", async () => {
+  const pullRequests = await reevaluateSiblingsAfterMergedPullRequest(
+    {
+      GITHUB_APP_ID: "app-id",
+      GITHUB_APP_PRIVATE_KEY: "private-key",
+    },
+    "pull_request",
+    {
+      action: "closed",
+      repository: { owner: { login: "connfy" }, name: "review-gate" },
+      installation: { id: 42 },
+      pull_request: {
+        number: 9,
+        merged: true,
+        base: { ref: "main" },
+      },
+    },
+    { statusContext: "review-gate/codex-clean" },
+    {
+      getInstallationToken: async () => "installation-token",
+      clientFactory: () => ({
+        async openPullRequests() {
+          return [{ number: 13, base: { ref: "release" } }];
+        },
+      }),
+      evaluateAndReport: async () => {
+        throw new Error("unexpected sibling reevaluation");
+      },
+    },
+  );
+
+  assert.deepEqual(pullRequests, []);
 });
 
 test("review-start retry observes a later PR body clean reaction after bounded pending rechecks", async () => {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  mergedPullRequestBaseRefFromEvent,
   pullRequestRefFromEvent,
   shouldIgnoreEvent,
   verifySignature,
@@ -45,6 +46,25 @@ test("pull_request event resolves to PR coordinates", () => {
     prNumber: 7,
     installationId: 42,
   });
+});
+
+test("merged pull_request close resolves the advanced base ref", () => {
+  const payload = {
+    action: "closed",
+    repository,
+    installation,
+    pull_request: {
+      number: 7,
+      merged: true,
+      base: { ref: "main" },
+    },
+  };
+
+  assert.equal(
+    mergedPullRequestBaseRefFromEvent("pull_request", payload),
+    "main",
+  );
+  assert.equal(pullRequestRefFromEvent("pull_request", payload).prNumber, 7);
 });
 
 test("pull_request_review_thread event resolves to PR coordinates", () => {

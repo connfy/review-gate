@@ -20,8 +20,10 @@ Workers KV namespace.
 
 1. GitHub sends a supported webhook to `fetch()`.
 2. The Worker verifies the signature, acknowledges the request, and evaluates
-   the referenced PR in `waitUntil()`.
-3. The result is written as the configured GitHub commit status.
+   the referenced PR in `waitUntil()`. A merged-PR close also lists the other
+   open PRs in that repository and evaluates siblings targeting the same base
+   ref.
+3. Each result is written as the configured GitHub commit status.
 4. A `pending` result is stored in `PENDING_REVIEWS`; a terminal result removes
    the matching queued head.
 5. Every three minutes, the scheduled handler evaluates queued pending heads
@@ -36,6 +38,11 @@ GitHub evidence. It requires a latest-head request, a later non-dismissed formal
 bot review for that exact head, and a later exact head/base attestation from an
 allowlisted human. Either live SHA changing invalidates the signal. No extra
 invalidation store or mutation authority is introduced.
+
+Merged base advances trigger same-base sibling evaluation from the subscribed
+`pull_request` close event. Direct pushes to a base branch remain covered by the
+rotating scheduled fallback, so their invalidation occurs when that fallback
+selects the affected PR.
 
 ## Operational boundaries
 

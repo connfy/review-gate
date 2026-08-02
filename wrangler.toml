@@ -8,9 +8,8 @@ compatibility_date = "2026-05-01"
 [[kv_namespaces]]
 binding = "PENDING_REVIEWS"
 
-# Event-first gate with a light scheduled sweep. The sweep catches reaction-only
-# clean signals because GitHub does not emit a standalone PR body reaction
-# webhook.
+# Event-first gate with a light scheduled sweep. The sweep catches signals with
+# no subscribed event, including PR body reactions and direct base pushes.
 #
 # Non-secret configuration (safe to commit). Override per deployment to reuse
 # the tool with any review bot:
