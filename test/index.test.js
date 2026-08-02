@@ -535,7 +535,7 @@ test("scheduled sweep rewrites a settled disposition audit link", () => {
   );
 });
 
-test("stale success is not published after the base advances", async () => {
+test("stale success is replaced with failure after the base advances", async () => {
   let pullRequestCalls = 0;
   const statuses = [];
   const published = await reportStatus(
@@ -562,7 +562,15 @@ test("stale success is not published after the base advances", async () => {
 
   assert.equal(published, false);
   assert.equal(pullRequestCalls, 1);
-  assert.deepEqual(statuses, []);
+  assert.deepEqual(statuses, [
+    [
+      settledSha,
+      {
+        state: "failure",
+        description: "Pull request changed during evaluation; retry required.",
+      },
+    ],
+  ]);
 });
 
 test("success is published when the live head and base still match", async () => {

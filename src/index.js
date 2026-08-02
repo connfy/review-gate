@@ -207,10 +207,13 @@ export function eventMayCreateSettledDisposition(eventName, payload, config) {
 export async function reportStatus(client, result) {
   if (result.state === "success") {
     const livePr = await client.pullRequest(result.prNumber);
-    if (
-      String(livePr?.head?.sha ?? "") !== result.sha ||
-      String(livePr?.base?.sha ?? "") !== result.baseSha
-    ) {
+    const liveSha = String(livePr?.head?.sha ?? "");
+    const liveBaseSha = String(livePr?.base?.sha ?? "");
+    if (liveSha !== result.sha || liveBaseSha !== result.baseSha) {
+      await client.setStatus(liveSha || result.sha, {
+        state: "failure",
+        description: "Pull request changed during evaluation; retry required.",
+      });
       return false;
     }
   }

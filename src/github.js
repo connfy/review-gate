@@ -153,6 +153,7 @@ async function githubPaginate(
       if (targetPage !== page) {
         page = targetPage;
         startPage = targetPage;
+        wrapped = false;
         continue;
       }
     }
