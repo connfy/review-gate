@@ -68,6 +68,11 @@ function configFromEnv(env) {
     reviewRequestText: env.REVIEW_REQUEST_TEXT,
     statusContext: env.STATUS_CONTEXT,
     botLogins,
+    settledDispositionLogins: env.SETTLED_DISPOSITION_LOGINS
+      ? env.SETTLED_DISPOSITION_LOGINS.split(",")
+          .map((value) => value.trim())
+          .filter(Boolean)
+      : undefined,
   });
 }
 
@@ -185,7 +190,7 @@ async function reportStatus(client, result) {
   await client.setStatus(result.sha, {
     state: result.state,
     description: result.description,
-    targetUrl: undefined,
+    targetUrl: result.targetUrl,
   });
 }
 
@@ -213,7 +218,11 @@ export function shouldReportStatus(currentStatus, result) {
   }
   return (
     String(currentStatus.state ?? "") !== result.state ||
-    String(currentStatus.description ?? "") !== result.description
+    String(currentStatus.description ?? "") !== result.description ||
+    Boolean(
+      result.targetUrl &&
+        String(currentStatus.target_url ?? "") !== result.targetUrl,
+    )
   );
 }
 

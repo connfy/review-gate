@@ -156,6 +156,24 @@ test("scheduled sweep status reporting only writes meaningful changes", () => {
   );
 });
 
+test("scheduled sweep rewrites a settled disposition audit link", () => {
+  assert.equal(
+    shouldReportStatus(
+      {
+        state: "success",
+        description: "Settled by @connfy for abc123abc123.",
+        target_url: "https://github.com/old-comment",
+      },
+      {
+        state: "success",
+        description: "Settled by @connfy for abc123abc123.",
+        targetUrl: "https://github.com/new-comment",
+      },
+    ),
+    true,
+  );
+});
+
 test("scheduled pending sweep evaluates a queued PR and removes a terminal result", async () => {
   const ref = {
     installationId: 42,

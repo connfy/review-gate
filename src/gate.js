@@ -14,6 +14,7 @@ export const DEFAULT_BOT_LOGINS = Object.freeze([
   "chatgpt-codex-connector",
   "chatgpt-codex-connector[bot]",
 ]);
+export const DEFAULT_SETTLED_DISPOSITION_LOGINS = Object.freeze([]);
 export const DEFAULT_STATUS_CONTEXT = "review-gate/codex-clean";
 export const REVIEW_IN_PROGRESS_DESCRIPTION =
   "Review bot is reviewing the latest head.";
@@ -35,6 +36,13 @@ export function resolveConfig(config = {}) {
       config.botLogins instanceof Set
         ? config.botLogins
         : new Set(config.botLogins ?? DEFAULT_BOT_LOGINS),
+    settledDispositionLogins:
+      config.settledDispositionLogins instanceof Set
+        ? config.settledDispositionLogins
+        : new Set(
+            config.settledDispositionLogins ??
+              DEFAULT_SETTLED_DISPOSITION_LOGINS,
+          ),
     statusContext: config.statusContext ?? DEFAULT_STATUS_CONTEXT,
   };
 }
@@ -112,6 +120,21 @@ function includesText(body, text) {
   return String(body ?? "").toLowerCase().includes(needle.toLowerCase());
 }
 
+export function extractSettledDispositionSha(body) {
+  const match = String(body ?? "").match(
+    /^@review-gate settle ([0-9a-f]{40})$/,
+  );
+  return match?.[1]?.toLowerCase() ?? null;
+}
+
+export function isSettledDispositionAuthor(comment, config) {
+  const { settledDispositionLogins } = resolveConfig(config);
+  return (
+    String(comment?.user?.type ?? "") === "User" &&
+    settledDispositionLogins.has(loginFor(comment?.user))
+  );
+}
+
 export function extractReviewedCommitPrefix(body) {
   const match = String(body ?? "").match(
     /\*\*Reviewed commit:\*\*\s*`([0-9a-f]+)`/i,
@@ -126,13 +149,16 @@ function shaMatchesPrefix(fullSha, prefix) {
   return String(fullSha).toLowerCase().startsWith(String(prefix).toLowerCase());
 }
 
-function reviewRequestTimestamp(comment, config) {
+function isReviewRequestComment(comment, config) {
   const { botLogins, reviewRequestText } = resolveConfig(config);
   const author = loginFor(comment?.user ?? comment?.actor);
-  if (botLogins.has(author) || !includesText(comment?.body, reviewRequestText)) {
-    return null;
-  }
-  return parseTimestamp(comment?.created_at);
+  return !botLogins.has(author) && includesText(comment?.body, reviewRequestText);
+}
+
+function reviewRequestTimestamp(comment, config) {
+  return isReviewRequestComment(comment, config)
+    ? parseTimestamp(comment?.created_at)
+    : null;
 }
 
 function latestReviewRequestTime(issueComments, timelineEvents, config) {
@@ -154,6 +180,34 @@ function latestReviewRequestTime(issueComments, timelineEvents, config) {
   }
 
   return latest;
+}
+
+function latestReviewRequestComment(issueComments, timelineEvents, config) {
+  const candidates = [];
+  for (const comment of issueComments) {
+    if (!isReviewRequestComment(comment, config) || comment?.id == null) {
+      continue;
+    }
+    const timelineIndex = timelineEvents.findIndex(
+      (event) =>
+        event?.event === "commented" &&
+        Number(event?.id) === Number(comment.id),
+    );
+    if (timelineIndex < 0) {
+      return null;
+    }
+    candidates.push({
+      timestamp: parseTimestamp(comment?.created_at),
+      timelineIndex,
+    });
+  }
+  return candidates.reduce(
+    (latest, candidate) =>
+      latest === null || candidate.timelineIndex > latest.timelineIndex
+        ? candidate
+        : latest,
+    null,
+  );
 }
 
 function reviewGeneration(issueComments, timelineEvents, config) {
@@ -394,6 +448,134 @@ function latestReviewBotResponseTime({
   return latest;
 }
 
+function reviewIsInProgress({
+  sha,
+  issueComments,
+  issueEyesReactions,
+  reviews,
+  reviewRequestReactions,
+  timelineEvents,
+  config,
+}) {
+  const latestInProgressTime = reviewInProgressEvents({
+    sha,
+    issueComments,
+    issueEyesReactions,
+    reviewRequestReactions,
+    timelineEvents,
+    config,
+  }).reduce(
+    (latest, event) =>
+      latest === null ? event.timestamp : Math.max(latest, event.timestamp),
+    null,
+  );
+  if (latestInProgressTime === null) {
+    return false;
+  }
+  const latestBotResponseTime = latestReviewBotResponseTime({
+    sha,
+    issueComments,
+    reviews,
+    timelineEvents,
+    config,
+  });
+  return (
+    latestBotResponseTime === null ||
+    latestBotResponseTime < latestInProgressTime
+  );
+}
+
+function settledDisposition({
+  sha,
+  issueComments,
+  issueEyesReactions,
+  reviews,
+  reviewRequestReactions,
+  timelineEvents,
+  config,
+}) {
+  const resolved = resolveConfig(config);
+  if (resolved.settledDispositionLogins.size === 0) {
+    return null;
+  }
+
+  const headBoundaryIndex = latestHeadBoundaryIndex(timelineEvents, sha);
+  const request = latestReviewRequestComment(
+    issueComments,
+    timelineEvents,
+    resolved,
+  );
+  if (
+    headBoundaryIndex === null ||
+    request === null ||
+    request.timestamp === null ||
+    request.timelineIndex <= headBoundaryIndex
+  ) {
+    return null;
+  }
+  if (
+    reviewIsInProgress({
+      sha,
+      issueComments,
+      issueEyesReactions,
+      reviews,
+      reviewRequestReactions,
+      timelineEvents,
+      config: resolved,
+    })
+  ) {
+    return null;
+  }
+
+  let latest = null;
+  for (const comment of issueComments) {
+    if (
+      !isSettledDispositionAuthor(comment, resolved) ||
+      extractSettledDispositionSha(comment?.body) !== sha.toLowerCase()
+    ) {
+      continue;
+    }
+    const timestamp = parseTimestamp(comment?.created_at);
+    const timelineIndex = timelineEvents.findIndex(
+      (event) =>
+        event?.event === "commented" &&
+        Number(event?.id) === Number(comment?.id),
+    );
+    if (timestamp === null || timelineIndex < 0) {
+      continue;
+    }
+    const hasQualifyingReview = reviews.some(
+      (review) =>
+        resolved.botLogins.has(loginFor(review?.user)) &&
+        String(review?.state ?? "").toLowerCase() !== "dismissed" &&
+        String(review?.commit_id ?? "") === sha &&
+        parseTimestamp(review?.submitted_at) > request.timestamp &&
+        parseTimestamp(review?.submitted_at) < timestamp,
+    );
+    const url = String(comment?.html_url ?? "");
+    if (!hasQualifyingReview || url.length === 0) {
+      continue;
+    }
+    if (
+      latest === null ||
+      timestamp > latest.timestamp ||
+      (timestamp === latest.timestamp && timelineIndex > latest.timelineIndex)
+    ) {
+      latest = {
+        timestamp,
+        timelineIndex,
+        login: loginFor(comment.user),
+        url,
+        detail: `settled disposition by @${loginFor(comment.user)} at ${
+          comment.created_at
+        }`,
+      };
+    }
+  }
+
+  return latest;
+}
+
 function cleanCommentsFromTimeline(timelineEvents, sha, config) {
   const boundaryIndex = latestHeadBoundaryIndex(timelineEvents, sha);
   if (boundaryIndex === null) {
@@ -605,6 +787,21 @@ export function evaluateGate({
     timelineEvents,
     config: resolved,
   });
+  let disposition = null;
+  if (cleanEvents.length === 0) {
+    disposition = settledDisposition({
+      sha,
+      issueComments,
+      issueEyesReactions,
+      reviews,
+      reviewRequestReactions,
+      timelineEvents,
+      config: resolved,
+    });
+    if (disposition !== null) {
+      cleanEvents.push(disposition.detail);
+    }
+  }
   if (cleanEvents.length === 0) {
     const inProgressEvents = reviewInProgressEvents({
       sha,
@@ -615,8 +812,10 @@ export function evaluateGate({
       config: resolved,
     });
     const latestInProgressTime = inProgressEvents.reduce(
-      (latest, event) =>
-        latest === null ? event.timestamp : Math.max(latest, event.timestamp),
+      (latestTime, event) =>
+        latestTime === null
+          ? event.timestamp
+          : Math.max(latestTime, event.timestamp),
       null,
     );
     const latestBotResponseTime = latestReviewBotResponseTime({
@@ -684,7 +883,11 @@ export function evaluateGate({
     prState,
     generation,
     state: "success",
-    description: "Review gate passed.",
+    description:
+      disposition === null
+        ? "Review gate passed."
+        : `Settled by @${disposition.login} for ${sha.slice(0, 12)}.`,
     details: cleanEvents,
+    ...(disposition?.url ? { targetUrl: disposition.url } : {}),
   };
 }
