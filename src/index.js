@@ -5,7 +5,11 @@
 // configured commit status on the head SHA. A light scheduled sweep catches
 // reaction-only updates that GitHub does not deliver as standalone webhooks.
 
-import { evaluateGate, resolveConfig } from "./gate.js";
+import {
+  evaluateGate,
+  REVIEW_EVIDENCE_CHANGED_DESCRIPTION,
+  resolveConfig,
+} from "./gate.js";
 import {
   getCachedInstallationToken,
   listAppInstallations,
@@ -244,6 +248,12 @@ async function evaluateAndReport(env, ref, config, options = {}) {
     retryOnDispositionMutation: options.retryOnDispositionMutation,
     evaluate: () => evaluateFromGitHub(client, ref, config),
   });
+  if (options.invalidateDisposition) {
+    result = reviewEvidenceChangedResult(
+      result,
+      options.invalidationTargetUrl,
+    );
+  }
 
   await reportStatus(client, result);
 
@@ -265,6 +275,16 @@ async function evaluateAndReport(env, ref, config, options = {}) {
   await trackPendingReviewSafely(env, ref, result);
 
   return result;
+}
+
+export function reviewEvidenceChangedResult(result, targetUrl = "") {
+  return {
+    ...result,
+    state: "failure",
+    description: REVIEW_EVIDENCE_CHANGED_DESCRIPTION,
+    details: [REVIEW_EVIDENCE_CHANGED_DESCRIPTION],
+    ...(targetUrl ? { targetUrl } : {}),
+  };
 }
 
 export async function maybeRetryIssueComment({
@@ -731,22 +751,23 @@ export async function maybeRetryReviewStart({
 }
 
 async function evaluateFromGitHub(client, ref, config) {
+  const pr = await client.pullRequest(ref.prNumber);
   const [
-    pr,
     issueComments,
     issueReactions,
     issueEyesReactions,
     reviews,
     reviewThreads,
     timelineEvents,
+    currentStatus,
   ] = await Promise.all([
-    client.pullRequest(ref.prNumber),
     client.issueComments(ref.prNumber),
     client.issueReactions(ref.prNumber, config.cleanReactionContent),
     client.issueReactions(ref.prNumber, config.inProgressReactionContent),
     client.reviews(ref.prNumber),
     client.reviewThreads(ref.prNumber),
     client.timelineEvents(ref.prNumber),
+    client.latestStatusForContext(pr.head.sha),
   ]);
   const reviewRequestReactions = await Promise.all(
     latestReviewRequestComments(issueComments, config).map(async (comment) => ({
@@ -767,6 +788,7 @@ async function evaluateFromGitHub(client, ref, config) {
     reviewThreads,
     reviewRequestReactions,
     timelineEvents,
+    currentStatus,
     config,
   });
 }
@@ -839,6 +861,11 @@ export default {
       payload,
       config,
     );
+    const invalidateDisposition = eventInvalidatesSettledDisposition(
+      eventName,
+      payload,
+      config,
+    );
     const retryOnReviewStart = eventMayStartReview(eventName, payload, config);
 
     // Do the GitHub round-trips after responding so the webhook delivery is
@@ -850,6 +877,12 @@ export default {
           retryOnDispositionMutation ||
           retryOnReviewRequestMutation ||
           retryOnReviewBotResponseMutation,
+        invalidateDisposition,
+        invalidationTargetUrl:
+          payload?.comment?.html_url ??
+          payload?.review?.html_url ??
+          payload?.pull_request?.html_url ??
+          "",
         retryOnReviewStart,
         reviewStartRetryDelayMs: parseDelayMs(
           env.REVIEW_START_RETRY_DELAY_MS,

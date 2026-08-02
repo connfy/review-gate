@@ -212,3 +212,33 @@ export function eventMayMutateReviewBotResponse(eventName, payload, config) {
     extractReviewedCommitPrefix(payload?.comment?.body) !== null
   );
 }
+
+export function eventInvalidatesSettledDisposition(
+  eventName,
+  payload,
+  config,
+) {
+  const resolved = resolveConfig(config);
+  if (resolved.settledDispositionLogins.size === 0) {
+    return false;
+  }
+
+  if (eventMayMutateReviewRequest(eventName, payload, resolved)) {
+    return true;
+  }
+
+  if (eventMayMutateSettledDisposition(eventName, payload, resolved)) {
+    return String(payload?.action ?? "") !== "created";
+  }
+
+  if (!eventMayMutateReviewBotResponse(eventName, payload, resolved)) {
+    return false;
+  }
+
+  const action = String(payload?.action ?? "");
+  if (action !== "created" && action !== "submitted") {
+    return true;
+  }
+  const body = String(payload?.comment?.body ?? payload?.review?.body ?? "");
+  return !body.includes(resolved.cleanText);
+}

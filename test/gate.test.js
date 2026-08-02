@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   evaluateGate,
+  REVIEW_EVIDENCE_CHANGED_DESCRIPTION,
   REVIEW_IN_PROGRESS_DESCRIPTION,
 } from "../src/gate.js";
 
@@ -727,6 +728,42 @@ test("custom settled-disposition command is honored", () => {
   const result = evaluateGate(fixture);
 
   assert.equal(result.state, "success");
+});
+
+test("review-evidence invalidation requires a newer exact-head disposition", () => {
+  const fixture = settledDispositionFixture({
+    currentStatus: {
+      state: "failure",
+      description: REVIEW_EVIDENCE_CHANGED_DESCRIPTION,
+      created_at: "2026-08-02T00:04:00Z",
+      target_url:
+        "https://github.com/connfy/example/pull/123#pullrequestreview-25",
+    },
+  });
+  const result = evaluateGate(fixture);
+
+  assert.equal(result.state, "failure");
+  assert.equal(result.description, REVIEW_EVIDENCE_CHANGED_DESCRIPTION);
+  assert.equal(result.targetUrl, fixture.currentStatus.target_url);
+
+  const redisposed = settledDispositionFixture({
+    currentStatus: fixture.currentStatus,
+  });
+  redisposed.issueComments[1] = {
+    ...redisposed.issueComments[1],
+    id: 30,
+    created_at: "2026-08-02T00:05:00Z",
+    html_url:
+      "https://github.com/connfy/example/pull/123#issuecomment-30",
+  };
+  redisposed.timelineEvents[3] = {
+    event: "commented",
+    ...redisposed.issueComments[1],
+  };
+  const redisposedResult = evaluateGate(redisposed);
+
+  assert.equal(redisposedResult.state, "success");
+  assert.equal(redisposedResult.targetUrl, redisposed.issueComments[1].html_url);
 });
 
 test("clean comment before latest head does not pass", () => {

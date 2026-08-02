@@ -5,6 +5,7 @@ import {
   latestReviewRequestComments,
   maybeRetryIssueComment,
   maybeRetryReviewStart,
+  reviewEvidenceChangedResult,
   runScheduledSweep,
   shouldReportStatus,
   sweepOpenPullRequests,
@@ -140,6 +141,31 @@ test("clean-comment retry preserves its existing success fast path", async () =>
   });
 
   assert.equal(result.state, "success");
+});
+
+test("review evidence mutation forces an auditable failure result", () => {
+  assert.deepEqual(
+    reviewEvidenceChangedResult(
+      {
+        sha: "abc123",
+        state: "success",
+        description: "Settled by @connfy for abc123.",
+        details: ["old disposition"],
+        targetUrl: "https://github.com/old",
+      },
+      "https://github.com/mutation",
+    ),
+    {
+      sha: "abc123",
+      state: "failure",
+      description:
+        "Review evidence changed; a new exact-head disposition is required.",
+      details: [
+        "Review evidence changed; a new exact-head disposition is required.",
+      ],
+      targetUrl: "https://github.com/mutation",
+    },
+  );
 });
 
 test("review-start retry keeps pending after bounded pending rechecks", async () => {

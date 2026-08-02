@@ -19,6 +19,8 @@ export const DEFAULT_SETTLED_DISPOSITION_LOGINS = Object.freeze([]);
 export const DEFAULT_STATUS_CONTEXT = "review-gate/codex-clean";
 export const REVIEW_IN_PROGRESS_DESCRIPTION =
   "Review bot is reviewing the latest head.";
+export const REVIEW_EVIDENCE_CHANGED_DESCRIPTION =
+  "Review evidence changed; a new exact-head disposition is required.";
 export const NO_CLEAN_REVIEW_DESCRIPTION =
   "No clean review pass after the latest head update. Need a clean " +
   "review comment, matching review body, or fresh PR body reaction.";
@@ -522,6 +524,23 @@ function latestTimestampedEvent(events) {
   );
 }
 
+function reviewEvidenceChangeBoundary(currentStatus) {
+  if (
+    String(currentStatus?.state ?? "") !== "failure" ||
+    String(currentStatus?.description ?? "") !==
+      REVIEW_EVIDENCE_CHANGED_DESCRIPTION
+  ) {
+    return null;
+  }
+  return {
+    timestamp:
+      parseTimestamp(currentStatus?.created_at) ?? Number.POSITIVE_INFINITY,
+    targetUrl: String(
+      currentStatus?.target_url ?? currentStatus?.targetUrl ?? "",
+    ),
+  };
+}
+
 function settledDisposition({
   sha,
   issueComments,
@@ -529,6 +548,7 @@ function settledDisposition({
   reviews,
   reviewRequestReactions,
   timelineEvents,
+  currentStatus,
   config,
 }) {
   const resolved = resolveConfig(config);
@@ -617,6 +637,8 @@ function settledDisposition({
     headBoundaryTime,
     request.timestamp,
     botResponse.timestamp,
+    reviewEvidenceChangeBoundary(currentStatus)?.timestamp ??
+      Number.NEGATIVE_INFINITY,
   );
   let latest = null;
   for (const comment of issueComments) {
@@ -843,6 +865,7 @@ export function evaluateGate({
   reviewThreads = [],
   reviewRequestReactions = [],
   timelineEvents = [],
+  currentStatus = null,
   config,
 }) {
   const resolved = resolveConfig(config);
@@ -886,6 +909,7 @@ export function evaluateGate({
       reviews,
       reviewRequestReactions,
       timelineEvents,
+      currentStatus,
       config: resolved,
     });
     if (disposition !== null) {
@@ -946,22 +970,30 @@ export function evaluateGate({
       timelineEvents,
       config: resolved,
     });
+    const evidenceChange = reviewEvidenceChangeBoundary(currentStatus);
     details.push(
-      staleReview ??
-        staleReaction ??
-        NO_CLEAN_REVIEW_DESCRIPTION,
+      evidenceChange === null
+        ? staleReview ?? staleReaction ?? NO_CLEAN_REVIEW_DESCRIPTION
+        : REVIEW_EVIDENCE_CHANGED_DESCRIPTION,
     );
   }
 
   if (details.length > 0) {
+    const evidenceChange = reviewEvidenceChangeBoundary(currentStatus);
     return {
       prNumber,
       sha,
       prState,
       generation,
       state: "failure",
-      description: summarizeFailureDetails(details),
+      description:
+        evidenceChange === null
+          ? summarizeFailureDetails(details)
+          : REVIEW_EVIDENCE_CHANGED_DESCRIPTION,
       details,
+      ...(evidenceChange?.targetUrl
+        ? { targetUrl: evidenceChange.targetUrl }
+        : {}),
     };
   }
 

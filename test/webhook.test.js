@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   eventMayMutateReviewBotResponse,
+  eventInvalidatesSettledDisposition,
   eventMayMutateSettledDisposition,
   eventMayMutateReviewRequest,
   pullRequestRefFromEvent,
@@ -288,6 +289,80 @@ test("bot review submissions and mutations request an API-lag retry", () => {
       true,
     );
   }
+});
+
+test("review evidence mutations invalidate an existing disposition", () => {
+  const enabledConfig = {
+    ...config,
+    settledDispositionLogins: new Set(["connfy"]),
+  };
+  assert.equal(
+    eventInvalidatesSettledDisposition(
+      "pull_request_review",
+      {
+        action: "edited",
+        review: {
+          user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
+        },
+      },
+      enabledConfig,
+    ),
+    true,
+  );
+  assert.equal(
+    eventInvalidatesSettledDisposition(
+      "pull_request_review",
+      {
+        action: "submitted",
+        review: {
+          user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
+          body: "Codex Review\n\nA finding.",
+        },
+      },
+      enabledConfig,
+    ),
+    true,
+  );
+  assert.equal(
+    eventInvalidatesSettledDisposition(
+      "pull_request_review",
+      {
+        action: "submitted",
+        review: {
+          user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
+          body: "Codex Review: Didn't find any major issues.",
+        },
+      },
+      enabledConfig,
+    ),
+    false,
+  );
+  assert.equal(
+    eventInvalidatesSettledDisposition(
+      "issue_comment",
+      issueCommentPayload({
+        user: "reviewer",
+        body: "ordinary replacement",
+        previousBody: "@codex review",
+        action: "edited",
+      }),
+      enabledConfig,
+    ),
+    true,
+  );
+  assert.equal(
+    eventInvalidatesSettledDisposition(
+      "issue_comment",
+      issueCommentPayload({
+        user: "connfy",
+        body:
+          "@review-gate settle " +
+          "abc123abc123abc123abc123abc123abc123abcd",
+      }),
+      enabledConfig,
+    ),
+    false,
+  );
 });
 
 test("unrelated comment edits remain ignored", () => {
