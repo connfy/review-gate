@@ -209,8 +209,11 @@ export async function reportStatus(client, result) {
     const livePr = await client.pullRequest(result.prNumber);
     const liveSha = String(livePr?.head?.sha ?? "");
     const liveBaseSha = String(livePr?.base?.sha ?? "");
-    if (liveSha !== result.sha || liveBaseSha !== result.baseSha) {
-      await client.setStatus(liveSha || result.sha, {
+    if (liveSha !== result.sha) {
+      return false;
+    }
+    if (liveBaseSha !== result.baseSha) {
+      await client.setStatus(result.sha, {
         state: "failure",
         description: "Pull request changed during evaluation; retry required.",
       });

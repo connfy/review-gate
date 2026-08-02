@@ -573,6 +573,36 @@ test("stale success is replaced with failure after the base advances", async () 
   ]);
 });
 
+test("stale success abstains when a newer head owns the status", async () => {
+  let pullRequestCalls = 0;
+  const statuses = [];
+  const published = await reportStatus(
+    {
+      async pullRequest() {
+        pullRequestCalls += 1;
+        return {
+          head: { sha: "new-head" },
+          base: { sha: advancedBaseSha },
+        };
+      },
+      async setStatus(...args) {
+        statuses.push(args);
+      },
+    },
+    {
+      prNumber: 12,
+      sha: settledSha,
+      baseSha: settledBaseSha,
+      state: "success",
+      description: "Review gate passed.",
+    },
+  );
+
+  assert.equal(published, false);
+  assert.equal(pullRequestCalls, 1);
+  assert.deepEqual(statuses, []);
+});
+
 test("success is published when the live head and base still match", async () => {
   let pullRequestCalls = 0;
   const statuses = [];
