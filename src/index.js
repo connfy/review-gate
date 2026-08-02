@@ -317,20 +317,20 @@ export async function reevaluateSiblingsAfterMergedPullRequest(
   );
   const evaluate = options.evaluateAndReport ?? evaluateAndReport;
 
-  const evaluations = await Promise.allSettled(
-    siblings.map((pull) =>
-      evaluate(
+  const failures = [];
+  for (const pull of siblings) {
+    try {
+      await evaluate(
         env,
         { ...mergedRef, prNumber: Number(pull.number) },
         config,
-      ),
-    ),
-  );
-  const failedEvaluation = evaluations.find(
-    (evaluation) => evaluation.status === "rejected",
-  );
-  if (failedEvaluation) {
-    throw failedEvaluation.reason;
+      );
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) {
+    throw failures[0];
   }
 
   return siblings.map((pull) => Number(pull.number));

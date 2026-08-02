@@ -229,6 +229,145 @@ test("merged close leaves pull requests on a different base untouched", async ()
   assert.deepEqual(pullRequests, []);
 });
 
+test("merged-close sibling reevaluation is sequential", async () => {
+  let activeEvaluations = 0;
+  let maxActiveEvaluations = 0;
+  const evaluatedPullRequests = [];
+
+  const pullRequests = await reevaluateSiblingsAfterMergedPullRequest(
+    {
+      GITHUB_APP_ID: "app-id",
+      GITHUB_APP_PRIVATE_KEY: "private-key",
+    },
+    "pull_request",
+    {
+      action: "closed",
+      repository: { owner: { login: "connfy" }, name: "review-gate" },
+      installation: { id: 42 },
+      pull_request: {
+        number: 9,
+        merged: true,
+        base: { ref: "main" },
+      },
+    },
+    { statusContext: "review-gate/codex-clean" },
+    {
+      getInstallationToken: async () => "installation-token",
+      clientFactory: () => ({
+        async openPullRequests() {
+          return [12, 13, 14].map((number) => ({
+            number,
+            base: { ref: "main" },
+          }));
+        },
+      }),
+      evaluateAndReport: async (_env, ref) => {
+        activeEvaluations += 1;
+        maxActiveEvaluations = Math.max(
+          maxActiveEvaluations,
+          activeEvaluations,
+        );
+        evaluatedPullRequests.push(ref.prNumber);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        activeEvaluations -= 1;
+      },
+    },
+  );
+
+  assert.deepEqual(pullRequests, [12, 13, 14]);
+  assert.deepEqual(evaluatedPullRequests, [12, 13, 14]);
+  assert.equal(maxActiveEvaluations, 1);
+});
+
+test("a failed sibling does not block others and remains eligible for fallback", async () => {
+  const eventEvaluations = [];
+  const eventOptions = {
+    getInstallationToken: async () => "installation-token",
+    clientFactory: () => ({
+      async openPullRequests() {
+        return [12, 13].map((number) => ({
+          number,
+          base: { ref: "main" },
+        }));
+      },
+    }),
+    evaluateAndReport: async (_env, ref) => {
+      eventEvaluations.push(ref.prNumber);
+      if (ref.prNumber === 12) {
+        throw new Error("temporary sibling failure");
+      }
+    },
+  };
+
+  await assert.rejects(
+    reevaluateSiblingsAfterMergedPullRequest(
+      {
+        GITHUB_APP_ID: "app-id",
+        GITHUB_APP_PRIVATE_KEY: "private-key",
+      },
+      "pull_request",
+      {
+        action: "closed",
+        repository: { owner: { login: "connfy" }, name: "review-gate" },
+        installation: { id: 42 },
+        pull_request: {
+          number: 9,
+          merged: true,
+          base: { ref: "main" },
+        },
+      },
+      { statusContext: "review-gate/codex-clean" },
+      eventOptions,
+    ),
+    /temporary sibling failure/,
+  );
+  assert.deepEqual(eventEvaluations, [12, 13]);
+
+  const fallbackEvaluations = [];
+  const summary = await sweepOpenPullRequests(
+    {
+      GITHUB_APP_ID: "app-id",
+      GITHUB_APP_PRIVATE_KEY: "private-key",
+    },
+    { statusContext: "review-gate/codex-clean" },
+    {
+      maxInstallations: 1,
+      maxRepositories: 1,
+      maxPullRequests: 1,
+      pageSpan: 10,
+      rotationSeed: 0,
+      listInstallations: async () => [{ id: 42 }],
+      getInstallationToken: async () => "installation-token",
+      listRepositories: async () => [
+        { owner: { login: "connfy" }, name: "review-gate" },
+      ],
+      clientFactory: () => ({
+        async openPullRequests() {
+          return [{ number: 12 }];
+        },
+        async latestStatusForContext() {
+          return null;
+        },
+      }),
+      evaluate: async (_client, { prNumber }) => {
+        fallbackEvaluations.push(prNumber);
+        return {
+          sha: `head-${prNumber}`,
+          generation: `head-${prNumber}`,
+          prState: "open",
+          state: "success",
+          description: "Review gate passed.",
+        };
+      },
+      reportStatus: async () => {},
+    },
+  );
+
+  assert.deepEqual(fallbackEvaluations, [12]);
+  assert.equal(summary.pullRequests, 1);
+  assert.equal(summary.updated, 1);
+});
+
 test("review-start retry observes a later PR body clean reaction after bounded pending rechecks", async () => {
   const sleeps = [];
   const reports = [];
