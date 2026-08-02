@@ -147,7 +147,7 @@ function parseTimestamp(value) {
   return Number.isFinite(timestamp) ? timestamp : null;
 }
 
-function latestReviewRequestComments(issueComments, config) {
+export function latestReviewRequestComments(issueComments, config) {
   let latestTime = null;
   let latestComments = [];
 
@@ -155,7 +155,8 @@ function latestReviewRequestComments(issueComments, config) {
     if (comment?.id == null || !isReviewRequestComment(comment, config)) {
       continue;
     }
-    const timestamp = parseTimestamp(comment?.created_at);
+    const timestamp =
+      parseTimestamp(comment?.updated_at) ?? parseTimestamp(comment?.created_at);
     if (timestamp === null) {
       continue;
     }

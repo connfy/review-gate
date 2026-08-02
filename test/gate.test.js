@@ -477,6 +477,17 @@ test("settled disposition requires a current-head bot response after the latest 
   }
 });
 
+test("dismissed current-head reviews do not support a disposition", () => {
+  const fixture = settledDispositionFixture();
+  fixture.reviews[0] = {
+    ...fixture.reviews[0],
+    state: "DISMISSED",
+  };
+  const result = evaluateGate(fixture);
+
+  assert.equal(result.state, "failure");
+});
+
 test("current-head bot finding comment can precede the disposition", () => {
   const fixture = settledDispositionFixture({
     reviews: [],

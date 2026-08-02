@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  latestReviewRequestComments,
   maybeRetryIssueComment,
   maybeRetryReviewStart,
   runScheduledSweep,
@@ -49,6 +50,33 @@ test("review-start retry observes a later PR body clean reaction after bounded p
   assert.deepEqual(sleeps, [15_000, 7_000]);
   assert.deepEqual(reports, ["pending", "success"]);
   assert.equal(result.state, "success");
+});
+
+test("latest request reaction selection uses edited request time", () => {
+  const comments = [
+    {
+      id: 10,
+      user: { login: "reviewer" },
+      body: "@codex review",
+      created_at: "2026-08-02T00:03:00Z",
+      updated_at: "2026-08-02T00:03:00Z",
+    },
+    {
+      id: 9,
+      user: { login: "reviewer" },
+      body: "@codex review",
+      created_at: "2026-08-02T00:01:00Z",
+      updated_at: "2026-08-02T00:04:00Z",
+    },
+  ];
+
+  assert.deepEqual(
+    latestReviewRequestComments(comments, {
+      botLogins: new Set(["chatgpt-codex-connector[bot]"]),
+      reviewRequestText: "@codex review",
+    }).map((comment) => comment.id),
+    [9],
+  );
 });
 
 test("disposition creation retries after GitHub API lag", async () => {

@@ -479,6 +479,7 @@ function currentHeadReviewBotResponses({
     if (
       botLogins.has(loginFor(review?.user)) &&
       String(review?.commit_id ?? "") === sha &&
+      String(review?.state ?? "").toLowerCase() !== "dismissed" &&
       timestamp !== null
     ) {
       const reviewId = Number(review?.id);
