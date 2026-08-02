@@ -14,6 +14,7 @@ import {
 } from "./github.js";
 import {
   eventMayMutateSettledDisposition,
+  eventMayMutateReviewRequest,
   pullRequestRefFromEvent,
   shouldIgnoreEvent,
   verifySignature,
@@ -826,6 +827,11 @@ export default {
       payload,
       config,
     );
+    const retryOnReviewRequestMutation = eventMayMutateReviewRequest(
+      eventName,
+      payload,
+      config,
+    );
     const retryOnReviewStart = eventMayStartReview(eventName, payload, config);
 
     // Do the GitHub round-trips after responding so the webhook delivery is
@@ -833,7 +839,8 @@ export default {
     ctx.waitUntil(
       evaluateAndReport(env, ref, config, {
         retryOnCleanComment,
-        retryOnDispositionMutation,
+        retryOnDispositionMutation:
+          retryOnDispositionMutation || retryOnReviewRequestMutation,
         retryOnReviewStart,
         reviewStartRetryDelayMs: parseDelayMs(
           env.REVIEW_START_RETRY_DELAY_MS,

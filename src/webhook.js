@@ -119,6 +119,9 @@ export function shouldIgnoreEvent(eventName, payload, config) {
     if (eventMayMutateSettledDisposition(eventName, payload, config)) {
       return false;
     }
+    if (eventMayMutateReviewRequest(eventName, payload, config)) {
+      return false;
+    }
     return !includesText(body, reviewRequestText);
   }
 
@@ -147,5 +150,28 @@ export function eventMayMutateSettledDisposition(eventName, payload, config) {
   return (
     action === "created" &&
     extractSettledDispositionSha(payload?.comment?.body, config) !== null
+  );
+}
+
+export function eventMayMutateReviewRequest(eventName, payload, config) {
+  if (eventName !== "issue_comment" || !payload?.issue?.pull_request) {
+    return false;
+  }
+
+  const { botLogins, reviewRequestText } = resolveConfig(config);
+  if (botLogins.has(loginFor(payload?.comment?.user))) {
+    return false;
+  }
+
+  const action = String(payload?.action ?? "");
+  if (action === "created" || action === "deleted") {
+    return includesText(payload?.comment?.body, reviewRequestText);
+  }
+  if (action !== "edited") {
+    return false;
+  }
+  return (
+    includesText(payload?.comment?.body, reviewRequestText) ||
+    includesText(payload?.changes?.body?.from, reviewRequestText)
   );
 }

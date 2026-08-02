@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   eventMayMutateSettledDisposition,
+  eventMayMutateReviewRequest,
   pullRequestRefFromEvent,
   shouldIgnoreEvent,
   verifySignature,
@@ -21,6 +22,7 @@ function issueCommentPayload({
   body,
   action = "created",
   type = "User",
+  previousBody,
 } = {}) {
   return {
     action,
@@ -29,6 +31,9 @@ function issueCommentPayload({
       user: { login: user, type },
       body,
     },
+    ...(previousBody === undefined
+      ? {}
+      : { changes: { body: { from: previousBody } } }),
   };
 }
 
@@ -179,6 +184,45 @@ test("ordinary allowlisted human comments remain ignored when created", () => {
     config,
   );
   assert.equal(ignored, true);
+});
+
+test("review request edits and deletions trigger reevaluation", () => {
+  const editedPayload = issueCommentPayload({
+    user: "reviewer",
+    body: "ordinary replacement text",
+    previousBody: "@codex review",
+    action: "edited",
+  });
+  assert.equal(
+    eventMayMutateReviewRequest("issue_comment", editedPayload, config),
+    true,
+  );
+  assert.equal(shouldIgnoreEvent("issue_comment", editedPayload, config), false);
+
+  const deletedPayload = issueCommentPayload({
+    user: "reviewer",
+    body: "@codex review",
+    action: "deleted",
+  });
+  assert.equal(
+    eventMayMutateReviewRequest("issue_comment", deletedPayload, config),
+    true,
+  );
+  assert.equal(shouldIgnoreEvent("issue_comment", deletedPayload, config), false);
+});
+
+test("unrelated comment edits remain ignored", () => {
+  const payload = issueCommentPayload({
+    user: "reviewer",
+    body: "new ordinary text",
+    previousBody: "old ordinary text",
+    action: "edited",
+  });
+  assert.equal(
+    eventMayMutateReviewRequest("issue_comment", payload, config),
+    false,
+  );
+  assert.equal(shouldIgnoreEvent("issue_comment", payload, config), true);
 });
 
 test("configured bot clean issue comments trigger evaluation", () => {

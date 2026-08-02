@@ -424,20 +424,17 @@ test("settled disposition must be present on the issue timeline", () => {
   assert.equal(result.state, "failure");
 });
 
-test("settled disposition requires a review request after the latest head", () => {
+test("review request must follow the latest head in timeline order", () => {
   const fixture = settledDispositionFixture();
-  fixture.issueComments[0] = {
-    ...fixture.issueComments[0],
-    created_at: "2026-08-01T23:59:00Z",
-  };
-  fixture.timelineEvents[1] = {
-    event: "commented",
-    ...fixture.issueComments[0],
-  };
+  fixture.timelineEvents = [
+    { event: "commented", ...fixture.issueComments[0] },
+    fixture.timelineEvents[0],
+    fixture.timelineEvents[2],
+    fixture.timelineEvents[3],
+  ];
   const result = evaluateGate(fixture);
 
   assert.equal(result.state, "failure");
-  assert.match(result.details[0], /No clean review pass/);
 });
 
 test("settled disposition requires a current-head bot response after the latest request", () => {

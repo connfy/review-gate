@@ -530,29 +530,31 @@ function settledDisposition({
     return null;
   }
 
+  const headBoundaryIndex = latestHeadBoundaryIndex(timelineEvents, sha);
   const headBoundaryTime = latestHeadBoundaryTime(timelineEvents, sha);
   const request = latestReviewRequest(issueComments, timelineEvents, resolved);
   if (
+    headBoundaryIndex === null ||
     headBoundaryTime === null ||
     request === null ||
-    request.timestamp < headBoundaryTime
+    request.id === null
   ) {
     return null;
   }
 
-  const requestTimelineEvent =
-    request.id === null
-      ? null
-      : timelineEvents.find(
-          (event) =>
-            event?.event === "commented" &&
-            Number(event?.id) === Number(request.id),
-        );
+  const requestTimelineEvent = timelineEvents.find(
+    (event) =>
+      event?.event === "commented" &&
+      Number(event?.id) === Number(request.id),
+  );
   const requestTimelineIndex =
     requestTimelineEvent == null
       ? null
       : timelineEvents.indexOf(requestTimelineEvent);
-  if (request.id !== null && requestTimelineIndex === null) {
+  if (
+    requestTimelineIndex === null ||
+    requestTimelineIndex <= headBoundaryIndex
+  ) {
     return null;
   }
   const botResponse = latestTimestampedEvent(
