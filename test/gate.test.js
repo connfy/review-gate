@@ -44,6 +44,7 @@ function settledDispositionFixture(overrides = {}) {
     created_at: "2026-08-02T00:01:00Z",
   };
   const botReview = {
+    id: 15,
     user: { login: "chatgpt-codex-connector[bot]" },
     body: "Codex Review\n\nHere are two findings.",
     submitted_at: "2026-08-02T00:02:00Z",
@@ -72,7 +73,13 @@ function settledDispositionFixture(overrides = {}) {
         author: { date: "2026-08-02T00:00:00Z" },
       },
       { event: "commented", ...request },
-      { event: "reviewed", created_at: botReview.submitted_at },
+      {
+        event: "reviewed",
+        id: botReview.id,
+        user: botReview.user,
+        submitted_at: botReview.submitted_at,
+        commit_id: botReview.commit_id,
+      },
       { event: "commented", ...disposition },
     ],
     config: {
@@ -499,6 +506,44 @@ test("a later review request invalidates an earlier settled disposition", () => 
   assert.equal(result.state, "failure");
 });
 
+test("a same-timestamp later review request invalidates an earlier disposition", () => {
+  const fixture = settledDispositionFixture();
+  const laterRequest = {
+    id: 30,
+    user: { login: "connfy", type: "User" },
+    body: "@codex review",
+    created_at: "2026-08-02T00:03:00Z",
+  };
+  fixture.issueComments.push(laterRequest);
+  fixture.timelineEvents.push({ event: "commented", ...laterRequest });
+  const result = evaluateGate(fixture);
+
+  assert.equal(result.state, "failure");
+});
+
+test("same-timestamp request bot response and disposition respect timeline order", () => {
+  const fixture = settledDispositionFixture();
+  fixture.issueComments[0] = {
+    ...fixture.issueComments[0],
+    created_at: "2026-08-02T00:02:00Z",
+  };
+  fixture.issueComments[1] = {
+    ...fixture.issueComments[1],
+    created_at: "2026-08-02T00:02:00Z",
+  };
+  fixture.timelineEvents[1] = {
+    event: "commented",
+    ...fixture.issueComments[0],
+  };
+  fixture.timelineEvents[3] = {
+    event: "commented",
+    ...fixture.issueComments[1],
+  };
+  const result = evaluateGate(fixture);
+
+  assert.equal(result.state, "success");
+});
+
 test("a later in-progress eyes signal blocks an earlier settled disposition", () => {
   const fixture = settledDispositionFixture({
     issueEyesReactions: [
@@ -513,6 +558,21 @@ test("a later in-progress eyes signal blocks an earlier settled disposition", ()
 
   assert.equal(result.state, "pending");
   assert.equal(result.description, REVIEW_IN_PROGRESS_DESCRIPTION);
+});
+
+test("same-timestamp in-progress eyes signal fails closed", () => {
+  const fixture = settledDispositionFixture({
+    issueEyesReactions: [
+      {
+        user: { login: "chatgpt-codex-connector[bot]" },
+        content: "eyes",
+        created_at: "2026-08-02T00:02:00Z",
+      },
+    ],
+  });
+  const result = evaluateGate(fixture);
+
+  assert.notEqual(result.state, "success");
 });
 
 test("an earlier eyes signal does not block a later bot response and disposition", () => {

@@ -458,9 +458,12 @@ function currentHeadReviewBotResponses({
       (includesText(body, cleanText) &&
         issueCommentQualifies(comment, sha, timelineEvents, config));
     const timestamp = parseTimestamp(comment?.created_at);
+    const timelineEvent = issueCommentTimelineEvent(timelineEvents, comment);
     if (qualifies && timestamp !== null) {
       responses.push({
         timestamp,
+        timelineIndex:
+          timelineEvent === null ? null : timelineEvents.indexOf(timelineEvent),
         detail: `review bot comment at ${comment.created_at}`,
       });
     }
@@ -473,8 +476,27 @@ function currentHeadReviewBotResponses({
       String(review?.commit_id ?? "") === sha &&
       timestamp !== null
     ) {
+      const reviewId = Number(review?.id);
+      const timelineEvent = timelineEvents.find((event) => {
+        if (event?.event !== "reviewed") {
+          return false;
+        }
+        const eventId = Number(event?.id);
+        if (Number.isFinite(reviewId) && Number.isFinite(eventId)) {
+          return reviewId === eventId;
+        }
+        return (
+          parseTimestamp(event?.submitted_at ?? event?.created_at) === timestamp &&
+          loginFor(event?.user ?? event?.actor) === loginFor(review?.user) &&
+          String(event?.commit_id ?? "") === sha
+        );
+      });
       responses.push({
         timestamp,
+        timelineIndex:
+          timelineEvent === undefined
+            ? null
+            : timelineEvents.indexOf(timelineEvent),
         detail: `review bot review at ${review.submitted_at}`,
       });
     }
@@ -515,6 +537,21 @@ function settledDisposition({
     return null;
   }
 
+  const requestTimelineEvent =
+    request.id === null
+      ? null
+      : timelineEvents.find(
+          (event) =>
+            event?.event === "commented" &&
+            Number(event?.id) === Number(request.id),
+        );
+  const requestTimelineIndex =
+    requestTimelineEvent === null
+      ? null
+      : timelineEvents.indexOf(requestTimelineEvent);
+  if (request.id !== null && requestTimelineIndex === null) {
+    return null;
+  }
   const botResponse = latestTimestampedEvent(
     currentHeadReviewBotResponses({
       sha,
@@ -522,7 +559,14 @@ function settledDisposition({
       reviews,
       timelineEvents,
       config: resolved,
-    }).filter((response) => response.timestamp >= request.timestamp),
+    }).filter(
+      (response) =>
+        response.timestamp > request.timestamp ||
+        (response.timestamp === request.timestamp &&
+          requestTimelineIndex !== null &&
+          response.timelineIndex !== null &&
+          response.timelineIndex > requestTimelineIndex),
+    ),
   );
   if (botResponse === null) {
     return null;
@@ -540,7 +584,8 @@ function settledDisposition({
   );
   if (
     latestInProgress !== null &&
-    latestInProgress.timestamp > botResponse.timestamp
+    (latestInProgress.timestamp > botResponse.timestamp ||
+      latestInProgress.timestamp === botResponse.timestamp)
   ) {
     return null;
   }
@@ -558,12 +603,18 @@ function settledDisposition({
     const dispositionSha = extractSettledDispositionSha(comment?.body, resolved);
     const timestamp = parseTimestamp(comment?.created_at);
     const timelineEvent = issueCommentTimelineEvent(timelineEvents, comment);
+    const timelineIndex =
+      timelineEvent === null ? null : timelineEvents.indexOf(timelineEvent);
     if (
       dispositionSha !== sha.toLowerCase() ||
       timestamp === null ||
       timestamp < boundaryTime ||
       timelineEvent === null ||
-      timelineEventTimestamp(timelineEvent) !== timestamp
+      timelineEventTimestamp(timelineEvent) !== timestamp ||
+      (timestamp === botResponse.timestamp &&
+        (botResponse.timelineIndex === null ||
+          timelineIndex === null ||
+          timelineIndex <= botResponse.timelineIndex))
     ) {
       continue;
     }
