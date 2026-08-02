@@ -12,14 +12,20 @@ const installation = { id: 42 };
 const config = {
   botLogins: new Set(["chatgpt-codex-connector[bot]"]),
   cleanText: "Codex Review: Didn't find any major issues.",
+  settledDispositionLogins: new Set(["connfy"]),
 };
 
-function issueCommentPayload({ user, body, action = "created" } = {}) {
+function issueCommentPayload({
+  user,
+  body,
+  action = "created",
+  type = "User",
+} = {}) {
   return {
     action,
     issue: { number: 11, pull_request: { url: "x" } },
     comment: {
-      user: { login: user },
+      user: { login: user, type },
       body,
     },
   };
@@ -94,6 +100,44 @@ test("review request issue comments trigger evaluation", () => {
     config,
   );
   assert.equal(ignored, false);
+});
+
+test("allowlisted exact-head settled-disposition comments trigger evaluation", () => {
+  const ignored = shouldIgnoreEvent(
+    "issue_comment",
+    issueCommentPayload({
+      user: "connfy",
+      body:
+        "@review-gate settle " +
+        "abc123abc123abc123abc123abc123abc123abcd",
+    }),
+    config,
+  );
+  assert.equal(ignored, false);
+});
+
+test("malformed, non-allowlisted, and bot settled-disposition comments are ignored", () => {
+  for (const payload of [
+    issueCommentPayload({
+      user: "connfy",
+      body: "@review-gate settle abc123",
+    }),
+    issueCommentPayload({
+      user: "other-owner",
+      body:
+        "@review-gate settle " +
+        "abc123abc123abc123abc123abc123abc123abcd",
+    }),
+    issueCommentPayload({
+      user: "connfy",
+      type: "Bot",
+      body:
+        "@review-gate settle " +
+        "abc123abc123abc123abc123abc123abc123abcd",
+    }),
+  ]) {
+    assert.equal(shouldIgnoreEvent("issue_comment", payload, config), true);
+  }
 });
 
 test("configured bot clean issue comments trigger evaluation", () => {

@@ -27,6 +27,12 @@ CLEAN_REACTION_CONTENT = "+1"
 REVIEW_IN_PROGRESS_REACTION_CONTENT = "eyes"
 # Comment text that marks a new review request/staleness boundary.
 REVIEW_REQUEST_TEXT = "@codex review"
+# Exact issue-comment command for an allowlisted human to settle reviewed
+# findings on one immutable head. The full 40-character head SHA must follow.
+SETTLED_DISPOSITION_COMMAND = "@review-gate settle"
+# Disabled by default. Add comma-separated human GitHub logins to enable the
+# narrow settled-disposition signal.
+SETTLED_DISPOSITION_LOGINS = ""
 # Optional webhook-bound re-checks for pending review-start events. The durable
 # late-reaction path is the scheduled sweep, so this is disabled by default.
 REVIEW_PENDING_RETRY_INTERVAL_MS = "7000"

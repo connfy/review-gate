@@ -34,6 +34,54 @@ function timelineHeadAt(timestamp) {
   ];
 }
 
+const fullHeadSha = "abc123abc123abc123abc123abc123abc123abcd";
+
+function settledDispositionFixture(overrides = {}) {
+  const request = {
+    id: 10,
+    user: { login: "connfy", type: "User" },
+    body: "@codex review",
+    created_at: "2026-08-02T00:01:00Z",
+  };
+  const botReview = {
+    user: { login: "chatgpt-codex-connector[bot]" },
+    body: "Codex Review\n\nHere are two findings.",
+    submitted_at: "2026-08-02T00:02:00Z",
+    commit_id: fullHeadSha,
+  };
+  const disposition = {
+    id: 20,
+    user: { login: "connfy", type: "User" },
+    body: `@review-gate settle ${fullHeadSha}`,
+    created_at: "2026-08-02T00:03:00Z",
+    html_url: "https://github.com/connfy/example/pull/123#issuecomment-20",
+  };
+  return {
+    pr: {
+      number: 123,
+      draft: false,
+      state: "open",
+      head: { sha: fullHeadSha },
+    },
+    issueComments: [request, disposition],
+    reviews: [botReview],
+    timelineEvents: [
+      {
+        event: "committed",
+        sha: fullHeadSha,
+        author: { date: "2026-08-02T00:00:00Z" },
+      },
+      { event: "commented", ...request },
+      { event: "reviewed", created_at: botReview.submitted_at },
+      { event: "commented", ...disposition },
+    ],
+    config: {
+      settledDispositionLogins: ["connfy"],
+    },
+    ...overrides,
+  };
+}
+
 test("clean review comment after latest head passes", () => {
   const result = evaluateGate({
     pr: pr(),
@@ -286,6 +334,231 @@ test("unresolved current thread blocks even with clean comment", () => {
   });
   assert.equal(result.state, "failure");
   assert.match(result.details[0], /unresolved current review thread/);
+});
+
+test("allowlisted human exact-head disposition passes after a current-head finding review", () => {
+  const result = evaluateGate(settledDispositionFixture());
+
+  assert.equal(result.state, "success");
+  assert.equal(
+    result.description,
+    "Settled by @connfy for abc123abc123.",
+  );
+  assert.equal(
+    result.targetUrl,
+    "https://github.com/connfy/example/pull/123#issuecomment-20",
+  );
+  assert.match(result.details[0], /settled disposition by @connfy/);
+});
+
+test("settled disposition does not override unresolved current threads", () => {
+  const result = evaluateGate(
+    settledDispositionFixture({
+      reviewThreads: [{ isResolved: false, isOutdated: false }],
+    }),
+  );
+
+  assert.equal(result.state, "failure");
+  assert.match(result.details[0], /unresolved current review thread/);
+});
+
+test("settled disposition is disabled without an allowlist", () => {
+  const fixture = settledDispositionFixture();
+  const result = evaluateGate({ ...fixture, config: {} });
+
+  assert.equal(result.state, "failure");
+  assert.match(result.details[0], /No clean review pass/);
+});
+
+test("settled disposition requires an allowlisted human account", () => {
+  for (const user of [
+    { login: "other-owner", type: "User" },
+    { login: "connfy", type: "Bot" },
+  ]) {
+    const fixture = settledDispositionFixture();
+    fixture.issueComments[1] = { ...fixture.issueComments[1], user };
+    const result = evaluateGate(fixture);
+    assert.equal(result.state, "failure");
+  }
+});
+
+test("settled disposition requires the exact full current head SHA", () => {
+  for (const body of [
+    "@review-gate settle abc123",
+    "@review-gate settle abc123abc123abc123abc123abc123abc123abce",
+    `please @review-gate settle ${fullHeadSha}`,
+    `@review-gate settle ${fullHeadSha} approved`,
+  ]) {
+    const fixture = settledDispositionFixture();
+    fixture.issueComments[1] = { ...fixture.issueComments[1], body };
+    const result = evaluateGate(fixture);
+    assert.equal(result.state, "failure", body);
+  }
+});
+
+test("PR body text alone is not a settled disposition", () => {
+  const fixture = settledDispositionFixture();
+  fixture.pr = {
+    ...fixture.pr,
+    body: `@review-gate settle ${fullHeadSha}`,
+  };
+  fixture.issueComments = [fixture.issueComments[0]];
+  fixture.timelineEvents = fixture.timelineEvents.slice(0, 3);
+  const result = evaluateGate(fixture);
+
+  assert.equal(result.state, "failure");
+});
+
+test("settled disposition must be present on the issue timeline", () => {
+  const fixture = settledDispositionFixture();
+  fixture.timelineEvents.pop();
+  const result = evaluateGate(fixture);
+
+  assert.equal(result.state, "failure");
+});
+
+test("settled disposition requires a review request after the latest head", () => {
+  const fixture = settledDispositionFixture();
+  fixture.issueComments[0] = {
+    ...fixture.issueComments[0],
+    created_at: "2026-08-01T23:59:00Z",
+  };
+  fixture.timelineEvents[1] = {
+    event: "commented",
+    ...fixture.issueComments[0],
+  };
+  const result = evaluateGate(fixture);
+
+  assert.equal(result.state, "failure");
+  assert.match(result.details[0], /No clean review pass/);
+});
+
+test("settled disposition requires a current-head bot response after the latest request", () => {
+  for (const review of [
+    {
+      user: { login: "chatgpt-codex-connector[bot]" },
+      body: "Codex Review\n\nHere are two findings.",
+      submitted_at: "2026-08-02T00:00:30Z",
+      commit_id: fullHeadSha,
+    },
+    {
+      user: { login: "chatgpt-codex-connector[bot]" },
+      body: "Codex Review\n\nHere are two findings.",
+      submitted_at: "2026-08-02T00:02:00Z",
+      commit_id: "def456def456def456def456def456def456def4",
+    },
+  ]) {
+    const fixture = settledDispositionFixture({ reviews: [review] });
+    const result = evaluateGate(fixture);
+    assert.equal(result.state, "failure");
+  }
+});
+
+test("current-head bot finding comment can precede the disposition", () => {
+  const fixture = settledDispositionFixture({
+    reviews: [],
+  });
+  const botComment = {
+    id: 15,
+    user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
+    body:
+      "Codex Review: two findings.\n\n" +
+      `**Reviewed commit:** \`${fullHeadSha.slice(0, 10)}\``,
+    created_at: "2026-08-02T00:02:00Z",
+  };
+  fixture.issueComments.splice(1, 0, botComment);
+  fixture.timelineEvents.splice(2, 0, { event: "commented", ...botComment });
+  const result = evaluateGate(fixture);
+
+  assert.equal(result.state, "success");
+});
+
+test("settled disposition must follow the current-head bot response", () => {
+  const fixture = settledDispositionFixture();
+  fixture.issueComments[1] = {
+    ...fixture.issueComments[1],
+    created_at: "2026-08-02T00:01:30Z",
+  };
+  const result = evaluateGate(fixture);
+
+  assert.equal(result.state, "failure");
+});
+
+test("a later review request invalidates an earlier settled disposition", () => {
+  const fixture = settledDispositionFixture();
+  const laterRequest = {
+    id: 30,
+    user: { login: "connfy", type: "User" },
+    body: "@codex review",
+    created_at: "2026-08-02T00:04:00Z",
+  };
+  fixture.issueComments.push(laterRequest);
+  fixture.timelineEvents.push({ event: "commented", ...laterRequest });
+  const result = evaluateGate(fixture);
+
+  assert.equal(result.state, "failure");
+});
+
+test("a later in-progress eyes signal blocks an earlier settled disposition", () => {
+  const fixture = settledDispositionFixture({
+    issueEyesReactions: [
+      {
+        user: { login: "chatgpt-codex-connector[bot]" },
+        content: "eyes",
+        created_at: "2026-08-02T00:04:00Z",
+      },
+    ],
+  });
+  const result = evaluateGate(fixture);
+
+  assert.equal(result.state, "pending");
+  assert.equal(result.description, REVIEW_IN_PROGRESS_DESCRIPTION);
+});
+
+test("an earlier eyes signal does not block a later bot response and disposition", () => {
+  const fixture = settledDispositionFixture({
+    issueEyesReactions: [
+      {
+        user: { login: "chatgpt-codex-connector[bot]" },
+        content: "eyes",
+        created_at: "2026-08-02T00:01:30Z",
+      },
+    ],
+  });
+  const result = evaluateGate(fixture);
+
+  assert.equal(result.state, "success");
+});
+
+test("a new head invalidates an earlier settled disposition", () => {
+  const fixture = settledDispositionFixture();
+  fixture.pr = {
+    ...fixture.pr,
+    head: { sha: "def456def456def456def456def456def456def4" },
+  };
+  fixture.timelineEvents.push({
+    event: "committed",
+    sha: fixture.pr.head.sha,
+    author: { date: "2026-08-02T00:04:00Z" },
+  });
+  const result = evaluateGate(fixture);
+
+  assert.equal(result.state, "failure");
+});
+
+test("custom settled-disposition command is honored", () => {
+  const fixture = settledDispositionFixture();
+  fixture.issueComments[1] = {
+    ...fixture.issueComments[1],
+    body: `/owner-settled ${fullHeadSha}`,
+  };
+  fixture.config = {
+    ...fixture.config,
+    settledDispositionCommand: "/owner-settled",
+  };
+  const result = evaluateGate(fixture);
+
+  assert.equal(result.state, "success");
 });
 
 test("clean comment before latest head does not pass", () => {

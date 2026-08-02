@@ -9,7 +9,9 @@ doubt. When Codex (or any other reviewer bot) decides a PR is clean, it flips a
 GitHub commit status to green. If the review bot has acknowledged the latest
 head with an `eyes` reaction, the status stays pending while review is in
 progress. If the PR is still a draft, has unresolved review threads, or the
-latest commit hasn't been reviewed yet, it stays red.
+latest commit hasn't been reviewed yet, it stays red. An optional exact-head
+command lets an allowlisted human record that reviewed findings are settled
+without asking the bot to review the unchanged commit again.
 
 In one line: it's the **missing layer between "we asked an AI to review" and
 "okay, this is actually safe to merge."** Your PR gets a status with this name,
@@ -46,6 +48,23 @@ A "clean pass" counts in any of three forms:
   current head SHA, or
 - the bot left a `+1` reaction on the PR body after the latest head update and
   latest review request.
+
+There is one narrow alternative for findings a human owner or coordinator has
+already settled. Enable `SETTLED_DISPOSITION_LOGINS`, then have an allowlisted
+human post this exact issue comment after the latest review request and the
+bot's current-head review:
+
+```text
+@review-gate settle <full-current-head-sha>
+```
+
+It passes only while the PR has zero unresolved current threads and no later
+`eyes` review is in progress. The account must be a GitHub human user, the
+command must contain the full 40-character current head SHA, and any new commit
+or later review request invalidates it. The status names the disposer and SHA
+and links to the command comment. PR body text never counts. This records a
+disposition of findings that were actually reviewed; it is not a general review
+bypass.
 
 While the review is running, Review Gate reports `pending` when the configured
 bot leaves an `eyes` reaction on the PR body or on the latest review request
@@ -206,6 +225,8 @@ different reviewer bot or change the trigger text.
 | `CLEAN_REACTION_CONTENT` | `+1` | PR body reaction that marks a clean review pass. |
 | `REVIEW_IN_PROGRESS_REACTION_CONTENT` | `eyes` | Reaction that marks the latest head as currently under review. |
 | `REVIEW_REQUEST_TEXT` | `@codex review` | Comment text that marks the latest review request boundary for reaction freshness. |
+| `SETTLED_DISPOSITION_COMMAND` | `@review-gate settle` | Exact issue-comment command prefix for a reviewed-finding disposition. |
+| `SETTLED_DISPOSITION_LOGINS` | empty (disabled) | Human GitHub logins allowed to issue exact-head dispositions (comma-separated). |
 | `REVIEW_START_RETRY_DELAY_MS` | `15000` | Delay before re-checking a PR-open/review-request event for late `eyes`. |
 | `REVIEW_PENDING_RETRY_INTERVAL_MS` | `7000` | Delay between optional webhook-bound re-checks while the latest review is pending. |
 | `REVIEW_PENDING_RETRY_ATTEMPTS` | `0` | Maximum pending-review re-checks inside the webhook task. Disabled by default because scheduled sweeps catch late PR-body `+1` reactions. |
@@ -306,6 +327,8 @@ Files worth knowing when you poke around:
 - Webhooks are verified with `X-Hub-Signature-256` and `GITHUB_WEBHOOK_SECRET`.
 - A clean pass only counts when authored by a configured bot login — nobody can
   sneak through by just copying the magic text.
+- A settled disposition is disabled by default and only counts as an exact issue
+  comment from an allowlisted GitHub human after a current-head bot review.
 - Never commit private keys or `.dev.vars`. If a secret ever lands in git history,
   rotate it immediately.
 

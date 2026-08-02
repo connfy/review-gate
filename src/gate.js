@@ -10,10 +10,12 @@ export const DEFAULT_CLEAN_TEXT = "Codex Review: Didn't find any major issues.";
 export const DEFAULT_CLEAN_REACTION_CONTENT = "+1";
 export const DEFAULT_IN_PROGRESS_REACTION_CONTENT = "eyes";
 export const DEFAULT_REVIEW_REQUEST_TEXT = "@codex review";
+export const DEFAULT_SETTLED_DISPOSITION_COMMAND = "@review-gate settle";
 export const DEFAULT_BOT_LOGINS = Object.freeze([
   "chatgpt-codex-connector",
   "chatgpt-codex-connector[bot]",
 ]);
+export const DEFAULT_SETTLED_DISPOSITION_LOGINS = Object.freeze([]);
 export const DEFAULT_STATUS_CONTEXT = "review-gate/codex-clean";
 export const REVIEW_IN_PROGRESS_DESCRIPTION =
   "Review bot is reviewing the latest head.";
@@ -31,10 +33,19 @@ export function resolveConfig(config = {}) {
     inProgressReactionContent:
       config.inProgressReactionContent ?? DEFAULT_IN_PROGRESS_REACTION_CONTENT,
     reviewRequestText: config.reviewRequestText ?? DEFAULT_REVIEW_REQUEST_TEXT,
+    settledDispositionCommand:
+      config.settledDispositionCommand ?? DEFAULT_SETTLED_DISPOSITION_COMMAND,
     botLogins:
       config.botLogins instanceof Set
         ? config.botLogins
         : new Set(config.botLogins ?? DEFAULT_BOT_LOGINS),
+    settledDispositionLogins:
+      config.settledDispositionLogins instanceof Set
+        ? config.settledDispositionLogins
+        : new Set(
+            config.settledDispositionLogins ??
+              DEFAULT_SETTLED_DISPOSITION_LOGINS,
+          ),
     statusContext: config.statusContext ?? DEFAULT_STATUS_CONTEXT,
   };
 }
@@ -90,18 +101,32 @@ function latestHeadBoundaryTime(timelineEvents, sha) {
   return boundaryTime;
 }
 
-function issueCommentIdsAfterHead(timelineEvents, sha) {
-  const boundaryIndex = latestHeadBoundaryIndex(timelineEvents, sha);
-  const commentIds = new Set();
-  if (boundaryIndex === null) {
-    return commentIds;
-  }
-  for (const event of timelineEvents.slice(boundaryIndex + 1)) {
-    if (event?.event === "commented" && event?.id != null) {
-      commentIds.add(Number(event.id));
-    }
-  }
-  return commentIds;
+function issueCommentTimelineEvent(timelineEvents, comment) {
+  const numericId = Number(comment?.id);
+  const commentId = Number.isFinite(numericId) ? numericId : null;
+  const commentTime = parseTimestamp(comment?.created_at);
+  return (
+    timelineEvents.find((event) => {
+      if (event?.event !== "commented") {
+        return false;
+      }
+      const eventNumericId = Number(event?.id);
+      const eventId = Number.isFinite(eventNumericId) ? eventNumericId : null;
+      if (commentId !== null && eventId !== null) {
+        return eventId === commentId;
+      }
+      if (commentId !== null || eventId !== null) {
+        return false;
+      }
+      const eventTime = timelineEventTimestamp(event);
+      return (
+        commentTime !== null &&
+        eventTime === commentTime &&
+        loginFor(event?.user ?? event?.actor) === loginFor(comment?.user) &&
+        String(event?.body ?? "") === String(comment?.body ?? "")
+      );
+    }) ?? null
+  );
 }
 
 function includesText(body, text) {
@@ -110,6 +135,30 @@ function includesText(body, text) {
     return false;
   }
   return String(body ?? "").toLowerCase().includes(needle.toLowerCase());
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function extractSettledDispositionSha(body, config) {
+  const { settledDispositionCommand } = resolveConfig(config);
+  const command = String(settledDispositionCommand ?? "").trim();
+  if (command.length === 0) {
+    return null;
+  }
+  const match = String(body ?? "").match(
+    new RegExp(`^\\s*${escapeRegExp(command)}\\s+([0-9a-f]{40})\\s*$`, "i"),
+  );
+  return match?.[1]?.toLowerCase() ?? null;
+}
+
+export function isSettledDispositionAuthor(comment, config) {
+  const { settledDispositionLogins } = resolveConfig(config);
+  return (
+    String(comment?.user?.type ?? "") === "User" &&
+    settledDispositionLogins.has(loginFor(comment?.user))
+  );
 }
 
 export function extractReviewedCommitPrefix(body) {
@@ -136,11 +185,25 @@ function reviewRequestTimestamp(comment, config) {
 }
 
 function latestReviewRequestTime(issueComments, timelineEvents, config) {
+  return (
+    latestReviewRequest(issueComments, timelineEvents, config)?.timestamp ?? null
+  );
+}
+
+function latestReviewRequest(issueComments, timelineEvents, config) {
   let latest = null;
   const consider = (comment) => {
     const timestamp = reviewRequestTimestamp(comment, config);
     if (timestamp !== null) {
-      latest = latest === null ? timestamp : Math.max(latest, timestamp);
+      const numericId = Number(comment?.id);
+      const id = Number.isFinite(numericId) ? numericId : null;
+      if (
+        latest === null ||
+        timestamp > latest.timestamp ||
+        (timestamp === latest.timestamp && id !== null && id > (latest.id ?? -1))
+      ) {
+        latest = { timestamp, id };
+      }
     }
   };
 
@@ -157,32 +220,7 @@ function latestReviewRequestTime(issueComments, timelineEvents, config) {
 }
 
 function reviewGeneration(issueComments, timelineEvents, config) {
-  let latest = null;
-  const consider = (comment) => {
-    const timestamp = reviewRequestTimestamp(comment, config);
-    if (timestamp === null) {
-      return;
-    }
-    const numericId = Number(comment?.id);
-    const id = Number.isFinite(numericId) ? numericId : null;
-    if (
-      latest === null ||
-      timestamp > latest.timestamp ||
-      (timestamp === latest.timestamp && id !== null && id > (latest.id ?? -1))
-    ) {
-      latest = { timestamp, id };
-    }
-  };
-
-  for (const comment of issueComments) {
-    consider(comment);
-  }
-  for (const event of timelineEvents) {
-    if (event?.event === "commented") {
-      consider(event);
-    }
-  }
-
+  const latest = latestReviewRequest(issueComments, timelineEvents, config);
   if (latest === null) {
     return "head";
   }
@@ -227,8 +265,13 @@ function issueCommentQualifies(comment, sha, timelineEvents, config) {
     return shaMatchesPrefix(sha, reviewedPrefix);
   }
 
-  const idsAfterHead = issueCommentIdsAfterHead(timelineEvents, sha);
-  return idsAfterHead.has(Number(comment?.id));
+  const boundaryIndex = latestHeadBoundaryIndex(timelineEvents, sha);
+  const timelineEvent = issueCommentTimelineEvent(timelineEvents, comment);
+  return (
+    boundaryIndex !== null &&
+    timelineEvent !== null &&
+    timelineEvents.indexOf(timelineEvent) > boundaryIndex
+  );
 }
 
 function botReactionQualifies(reaction, content, boundary, config) {
@@ -388,6 +431,158 @@ function latestReviewBotResponseTime({
       String(review?.commit_id ?? "") === sha
     ) {
       updateLatest(parseTimestamp(review?.submitted_at));
+    }
+  }
+
+  return latest;
+}
+
+function currentHeadReviewBotResponses({
+  sha,
+  issueComments,
+  reviews,
+  timelineEvents,
+  config,
+}) {
+  const { botLogins, cleanText } = resolveConfig(config);
+  const responses = [];
+
+  for (const comment of issueComments) {
+    if (!botLogins.has(loginFor(comment?.user))) {
+      continue;
+    }
+    const body = String(comment?.body ?? "");
+    const reviewedPrefix = extractReviewedCommitPrefix(body);
+    const qualifies =
+      shaMatchesPrefix(sha, reviewedPrefix) ||
+      (includesText(body, cleanText) &&
+        issueCommentQualifies(comment, sha, timelineEvents, config));
+    const timestamp = parseTimestamp(comment?.created_at);
+    if (qualifies && timestamp !== null) {
+      responses.push({
+        timestamp,
+        detail: `review bot comment at ${comment.created_at}`,
+      });
+    }
+  }
+
+  for (const review of reviews) {
+    const timestamp = parseTimestamp(review?.submitted_at);
+    if (
+      botLogins.has(loginFor(review?.user)) &&
+      String(review?.commit_id ?? "") === sha &&
+      timestamp !== null
+    ) {
+      responses.push({
+        timestamp,
+        detail: `review bot review at ${review.submitted_at}`,
+      });
+    }
+  }
+
+  return responses;
+}
+
+function latestTimestampedEvent(events) {
+  return events.reduce(
+    (latest, event) =>
+      latest === null || event.timestamp > latest.timestamp ? event : latest,
+    null,
+  );
+}
+
+function settledDisposition({
+  sha,
+  issueComments,
+  issueEyesReactions,
+  reviews,
+  reviewRequestReactions,
+  timelineEvents,
+  config,
+}) {
+  const resolved = resolveConfig(config);
+  if (resolved.settledDispositionLogins.size === 0) {
+    return null;
+  }
+
+  const headBoundaryTime = latestHeadBoundaryTime(timelineEvents, sha);
+  const request = latestReviewRequest(issueComments, timelineEvents, resolved);
+  if (
+    headBoundaryTime === null ||
+    request === null ||
+    request.timestamp < headBoundaryTime
+  ) {
+    return null;
+  }
+
+  const botResponse = latestTimestampedEvent(
+    currentHeadReviewBotResponses({
+      sha,
+      issueComments,
+      reviews,
+      timelineEvents,
+      config: resolved,
+    }).filter((response) => response.timestamp >= request.timestamp),
+  );
+  if (botResponse === null) {
+    return null;
+  }
+
+  const latestInProgress = latestTimestampedEvent(
+    reviewInProgressEvents({
+      sha,
+      issueComments,
+      issueEyesReactions,
+      reviewRequestReactions,
+      timelineEvents,
+      config: resolved,
+    }),
+  );
+  if (
+    latestInProgress !== null &&
+    latestInProgress.timestamp > botResponse.timestamp
+  ) {
+    return null;
+  }
+
+  const boundaryTime = Math.max(
+    headBoundaryTime,
+    request.timestamp,
+    botResponse.timestamp,
+  );
+  let latest = null;
+  for (const comment of issueComments) {
+    if (!isSettledDispositionAuthor(comment, resolved)) {
+      continue;
+    }
+    const dispositionSha = extractSettledDispositionSha(comment?.body, resolved);
+    const timestamp = parseTimestamp(comment?.created_at);
+    const timelineEvent = issueCommentTimelineEvent(timelineEvents, comment);
+    if (
+      dispositionSha !== sha.toLowerCase() ||
+      timestamp === null ||
+      timestamp < boundaryTime ||
+      timelineEvent === null ||
+      timelineEventTimestamp(timelineEvent) !== timestamp
+    ) {
+      continue;
+    }
+    const numericId = Number(comment?.id);
+    const id = Number.isFinite(numericId) ? numericId : null;
+    if (
+      latest === null ||
+      timestamp > latest.timestamp ||
+      (timestamp === latest.timestamp && id !== null && id > (latest.id ?? -1))
+    ) {
+      latest = {
+        timestamp,
+        id,
+        login: loginFor(comment.user),
+        url: String(comment?.html_url ?? ""),
+        detail: `settled disposition by @${loginFor(comment.user)} at ${
+          comment.created_at
+        }`,
+      };
     }
   }
 
@@ -605,6 +800,21 @@ export function evaluateGate({
     timelineEvents,
     config: resolved,
   });
+  let disposition = null;
+  if (cleanEvents.length === 0) {
+    disposition = settledDisposition({
+      sha,
+      issueComments,
+      issueEyesReactions,
+      reviews,
+      reviewRequestReactions,
+      timelineEvents,
+      config: resolved,
+    });
+    if (disposition !== null) {
+      cleanEvents.push(disposition.detail);
+    }
+  }
   if (cleanEvents.length === 0) {
     const inProgressEvents = reviewInProgressEvents({
       sha,
@@ -684,7 +894,11 @@ export function evaluateGate({
     prState,
     generation,
     state: "success",
-    description: "Review gate passed.",
+    description:
+      disposition === null
+        ? "Review gate passed."
+        : `Settled by @${disposition.login} for ${sha.slice(0, 12)}.`,
     details: cleanEvents,
+    ...(disposition?.url ? { targetUrl: disposition.url } : {}),
   };
 }

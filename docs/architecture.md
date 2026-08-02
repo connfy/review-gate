@@ -31,6 +31,13 @@ The queue is an optimization, not a new authority. GitHub remains the source of
 truth, and every scheduled retry re-fetches the current PR, reviews, reactions,
 threads, and timeline before changing the status.
 
+The optional settled-disposition path is also derived from GitHub evidence. It
+accepts only an exact issue comment from a configured human after the latest
+head, review request, and current-head bot response. Unresolved current threads,
+a later in-progress reaction, a later review request, or a new head keeps or
+returns the gate to non-success. The resulting commit status links to the
+disposition comment for audit.
+
 ## Operational boundaries
 
 - Workers KV is eventually consistent, so a newly queued head may take up to a

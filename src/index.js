@@ -66,8 +66,14 @@ function configFromEnv(env) {
     cleanReactionContent: env.CLEAN_REACTION_CONTENT,
     inProgressReactionContent: env.REVIEW_IN_PROGRESS_REACTION_CONTENT,
     reviewRequestText: env.REVIEW_REQUEST_TEXT,
+    settledDispositionCommand: env.SETTLED_DISPOSITION_COMMAND,
     statusContext: env.STATUS_CONTEXT,
     botLogins,
+    settledDispositionLogins: env.SETTLED_DISPOSITION_LOGINS
+      ? env.SETTLED_DISPOSITION_LOGINS.split(",")
+          .map((value) => value.trim())
+          .filter(Boolean)
+      : undefined,
   });
 }
 
@@ -185,7 +191,7 @@ async function reportStatus(client, result) {
   await client.setStatus(result.sha, {
     state: result.state,
     description: result.description,
-    targetUrl: undefined,
+    targetUrl: result.targetUrl,
   });
 }
 

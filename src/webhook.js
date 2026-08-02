@@ -2,7 +2,11 @@
 // event-level decisions that avoid full PR re-evaluation when the payload cannot
 // move the gate forward.
 
-import { resolveConfig } from "./gate.js";
+import {
+  extractSettledDispositionSha,
+  isSettledDispositionAuthor,
+  resolveConfig,
+} from "./gate.js";
 
 const RELEVANT_EVENTS = new Set([
   "pull_request",
@@ -112,6 +116,12 @@ export function shouldIgnoreEvent(eventName, payload, config) {
   const action = String(payload?.action ?? "");
   const body = String(payload?.comment?.body ?? "");
   if (!botLogins.has(author)) {
+    if (
+      isSettledDispositionAuthor(payload?.comment, config) &&
+      extractSettledDispositionSha(body, config) !== null
+    ) {
+      return false;
+    }
     return !includesText(body, reviewRequestText);
   }
 

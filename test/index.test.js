@@ -156,6 +156,19 @@ test("scheduled sweep status reporting only writes meaningful changes", () => {
   );
 });
 
+test("scheduled sweep rewrites a success status when the disposition audit description changes", () => {
+  assert.equal(
+    shouldReportStatus(
+      { state: "success", description: "Review gate passed." },
+      {
+        state: "success",
+        description: "Settled by @connfy for abc123abc123.",
+      },
+    ),
+    true,
+  );
+});
+
 test("scheduled pending sweep evaluates a queued PR and removes a terminal result", async () => {
   const ref = {
     installationId: 42,
