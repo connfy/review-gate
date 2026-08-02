@@ -5,7 +5,12 @@
 // configured commit status on the head SHA. A light scheduled sweep catches
 // reaction-only updates that GitHub does not deliver as standalone webhooks.
 
-import { evaluateGate, resolveConfig } from "./gate.js";
+import {
+  evaluateGate,
+  extractSettledDispositionSha,
+  isSettledDispositionAuthor,
+  resolveConfig,
+} from "./gate.js";
 import {
   getCachedInstallationToken,
   listAppInstallations,
@@ -68,6 +73,11 @@ function configFromEnv(env) {
     reviewRequestText: env.REVIEW_REQUEST_TEXT,
     statusContext: env.STATUS_CONTEXT,
     botLogins,
+    settledDispositionLogins: env.SETTLED_DISPOSITION_LOGINS
+      ? env.SETTLED_DISPOSITION_LOGINS.split(",")
+          .map((value) => value.trim())
+          .filter(Boolean)
+      : undefined,
   });
 }
 
@@ -181,11 +191,23 @@ function eventMayStartReview(eventName, payload, config) {
   ]).has(String(payload?.action ?? ""));
 }
 
+// A newly created exact settled-disposition command can flip the gate to
+// success, but the issue-comments and timeline APIs may not expose it yet when
+// the webhook arrives. Reuse the same bounded created-clean-comment retry.
+export function eventMayCreateSettledDisposition(eventName, payload, config) {
+  return (
+    eventName === "issue_comment" &&
+    String(payload?.action ?? "") === "created" &&
+    isSettledDispositionAuthor(payload?.comment, config) &&
+    extractSettledDispositionSha(payload?.comment?.body) !== null
+  );
+}
+
 async function reportStatus(client, result) {
   await client.setStatus(result.sha, {
     state: result.state,
     description: result.description,
-    targetUrl: undefined,
+    targetUrl: result.targetUrl,
   });
 }
 
@@ -213,7 +235,11 @@ export function shouldReportStatus(currentStatus, result) {
   }
   return (
     String(currentStatus.state ?? "") !== result.state ||
-    String(currentStatus.description ?? "") !== result.description
+    String(currentStatus.description ?? "") !== result.description ||
+    Boolean(
+      result.targetUrl &&
+        String(currentStatus.target_url ?? "") !== result.targetUrl,
+    )
   );
 }
 
@@ -791,7 +817,8 @@ export default {
     const retryOnCleanComment =
       eventName === "issue_comment" &&
       String(payload?.action ?? "") === "created" &&
-      String(payload?.comment?.body ?? "").includes(config.cleanText);
+      (String(payload?.comment?.body ?? "").includes(config.cleanText) ||
+        eventMayCreateSettledDisposition(eventName, payload, config));
     const retryOnReviewStart = eventMayStartReview(eventName, payload, config);
 
     // Do the GitHub round-trips after responding so the webhook delivery is

@@ -31,6 +31,11 @@ The queue is an optimization, not a new authority. GitHub remains the source of
 truth, and every scheduled retry re-fetches the current PR, reviews, reactions,
 threads, and timeline before changing the status.
 
+The optional settled-disposition signal is also derived only from current
+GitHub evidence. It requires a latest-head request, a later non-dismissed formal
+bot review for that exact head, and a later exact command from an allowlisted
+human. No extra invalidation store or mutation authority is introduced.
+
 ## Operational boundaries
 
 - Workers KV is eventually consistent, so a newly queued head may take up to a

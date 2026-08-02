@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  eventMayCreateSettledDisposition,
   maybeRetryReviewStart,
   runScheduledSweep,
   shouldReportStatus,
@@ -9,6 +10,62 @@ import {
   sweepPendingPullRequests,
 } from "../src/index.js";
 import { pendingReviewKey } from "../src/pending.js";
+
+const settledConfig = { settledDispositionLogins: new Set(["connfy"]) };
+const settledSha = "abc123abc123abc123abc123abc123abc123abcd";
+
+function settledCommentEvent({
+  user = "connfy",
+  type = "User",
+  action = "created",
+  body = `@review-gate settle ${settledSha}`,
+} = {}) {
+  return {
+    action,
+    issue: { number: 11, pull_request: { url: "x" } },
+    comment: { user: { login: user, type }, body },
+  };
+}
+
+test("created exact settled-disposition arms the bounded propagation retry", () => {
+  assert.equal(
+    eventMayCreateSettledDisposition(
+      "issue_comment",
+      settledCommentEvent(),
+      settledConfig,
+    ),
+    true,
+  );
+});
+
+test("only a newly created, well-formed, allowlisted human disposition arms the retry", () => {
+  const cases = [
+    settledCommentEvent({ action: "edited" }),
+    settledCommentEvent({ action: "deleted" }),
+    settledCommentEvent({ type: "Bot" }),
+    settledCommentEvent({ user: "eve" }),
+    settledCommentEvent({ body: "@review-gate settle abc123" }),
+    settledCommentEvent({ body: `please @review-gate settle ${settledSha}` }),
+  ];
+  for (const payload of cases) {
+    assert.equal(
+      eventMayCreateSettledDisposition("issue_comment", payload, settledConfig),
+      false,
+    );
+  }
+  assert.equal(
+    eventMayCreateSettledDisposition(
+      "pull_request",
+      { action: "opened" },
+      settledConfig,
+    ),
+    false,
+  );
+  assert.equal(
+    eventMayCreateSettledDisposition("issue_comment", settledCommentEvent(), {}),
+    false,
+  );
+});
 
 test("review-start retry observes a later PR body clean reaction after bounded pending rechecks", async () => {
   const sleeps = [];
@@ -153,6 +210,24 @@ test("scheduled sweep status reporting only writes meaningful changes", () => {
       { state: "success", description: "Review gate passed." },
     ),
     false,
+  );
+});
+
+test("scheduled sweep rewrites a settled disposition audit link", () => {
+  assert.equal(
+    shouldReportStatus(
+      {
+        state: "success",
+        description: "Settled by @connfy for abc123abc123.",
+        target_url: "https://github.com/old-comment",
+      },
+      {
+        state: "success",
+        description: "Settled by @connfy for abc123abc123.",
+        targetUrl: "https://github.com/new-comment",
+      },
+    ),
+    true,
   );
 });
 
