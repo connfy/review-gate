@@ -129,9 +129,13 @@ async function githubPaginate(
   const perPage = Number.isFinite(limit) ? Math.max(1, Math.min(100, limit)) : 100;
   const cursor = normalizeNonNegativeInteger(pageCursor);
   let page = normalizeNonNegativeInteger(pageOffset) + 1;
+  let startPage = page;
   let wrapped = false;
   let retargeted = false;
   for (;;) {
+    if (wrapped && page === startPage) {
+      return out;
+    }
     const response = await githubFetchResponse(
       token,
       "GET",
@@ -148,10 +152,12 @@ async function githubPaginate(
       retargeted = true;
       if (targetPage !== page) {
         page = targetPage;
+        startPage = targetPage;
+        wrapped = false;
         continue;
       }
     }
-    if (rows.length === 0 && page > 1 && !wrapped) {
+    if (rows.length === 0 && startPage > 1 && page > 1 && !wrapped) {
       page = 1;
       wrapped = true;
       continue;

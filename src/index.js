@@ -3,11 +3,11 @@
 // A single GitHub App delivers webhooks for every installed repository to this
 // Worker. For each pull-request event we recompute the gate and report the
 // configured commit status on the head SHA. A light scheduled sweep catches
-// reaction-only updates that GitHub does not deliver as standalone webhooks.
+// changes without a subscribed event, including reactions and direct base pushes.
 
 import {
   evaluateGate,
-  extractSettledDispositionSha,
+  extractSettledDispositionShas,
   isSettledDispositionAuthor,
   resolveConfig,
 } from "./gate.js";
@@ -18,6 +18,7 @@ import {
   RepoClient,
 } from "./github.js";
 import {
+  mergedPullRequestBaseRefFromEvent,
   pullRequestRefFromEvent,
   shouldIgnoreEvent,
   verifySignature,
@@ -199,16 +200,33 @@ export function eventMayCreateSettledDisposition(eventName, payload, config) {
     eventName === "issue_comment" &&
     String(payload?.action ?? "") === "created" &&
     isSettledDispositionAuthor(payload?.comment, config) &&
-    extractSettledDispositionSha(payload?.comment?.body) !== null
+    extractSettledDispositionShas(payload?.comment?.body) !== null
   );
 }
 
-async function reportStatus(client, result) {
+export async function reportStatus(client, result) {
+  if (result.state === "success") {
+    const livePr = await client.pullRequest(result.prNumber);
+    const liveSha = String(livePr?.head?.sha ?? "");
+    const liveBaseSha = String(livePr?.base?.sha ?? "");
+    if (liveSha !== result.sha) {
+      return false;
+    }
+    if (liveBaseSha !== result.baseSha) {
+      await client.setStatus(result.sha, {
+        state: "failure",
+        description: "Pull request changed during evaluation; retry required.",
+      });
+      return false;
+    }
+  }
+
   await client.setStatus(result.sha, {
     state: result.state,
     description: result.description,
     targetUrl: result.targetUrl,
   });
+  return true;
 }
 
 async function trackPendingReviewSafely(env, ref, result) {
@@ -278,6 +296,61 @@ async function evaluateAndReport(env, ref, config, options = {}) {
   await trackPendingReviewSafely(env, ref, result);
 
   return result;
+}
+
+export async function reevaluateSiblingsAfterMergedPullRequest(
+  env,
+  eventName,
+  payload,
+  config,
+  options = {},
+) {
+  const baseRef = mergedPullRequestBaseRefFromEvent(eventName, payload);
+  const mergedRef = pullRequestRefFromEvent(eventName, payload);
+  if (baseRef === null || mergedRef === null) {
+    return [];
+  }
+
+  const installationTokenFor =
+    options.getInstallationToken ?? getCachedInstallationToken;
+  const token = await installationTokenFor(
+    env.GITHUB_APP_ID,
+    env.GITHUB_APP_PRIVATE_KEY,
+    mergedRef.installationId,
+  );
+  const client = (options.clientFactory ??
+    ((installationToken, owner, repo) =>
+      new RepoClient(
+        installationToken,
+        owner,
+        repo,
+        config.statusContext,
+      )))(token, mergedRef.owner, mergedRef.repo);
+  const pulls = await client.openPullRequests();
+  const siblings = pulls.filter(
+    (pull) =>
+      Number(pull?.number) !== mergedRef.prNumber &&
+      String(pull?.base?.ref ?? "") === baseRef,
+  );
+  const evaluate = options.evaluateAndReport ?? evaluateAndReport;
+
+  const failures = [];
+  for (const pull of siblings) {
+    try {
+      await evaluate(
+        env,
+        { ...mergedRef, prNumber: Number(pull.number) },
+        config,
+      );
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) {
+    throw failures[0];
+  }
+
+  return siblings.map((pull) => Number(pull.number));
 }
 
 function emptyOpenSweepSummary() {
@@ -824,27 +897,40 @@ export default {
     // Do the GitHub round-trips after responding so the webhook delivery is
     // acknowledged promptly even if the API calls take a moment.
     ctx.waitUntil(
-      evaluateAndReport(env, ref, config, {
-        retryOnCleanComment,
-        retryOnReviewStart,
-        reviewStartRetryDelayMs: parseDelayMs(
-          env.REVIEW_START_RETRY_DELAY_MS,
-          REVIEW_START_RETRY_DELAY_MS,
-        ),
-        reviewPendingRetryIntervalMs: parseDelayMs(
-          env.REVIEW_PENDING_RETRY_INTERVAL_MS,
-          REVIEW_PENDING_RETRY_INTERVAL_MS,
-        ),
-        reviewPendingRetryAttempts: parseNonNegativeInteger(
-          env.REVIEW_PENDING_RETRY_ATTEMPTS,
-          REVIEW_PENDING_RETRY_ATTEMPTS,
-        ),
-      }).catch((error) => {
-        console.error(
-          `gate evaluation failed for ${ref.owner}/${ref.repo}#${ref.prNumber}:`,
-          error,
-        );
-      }),
+      Promise.all([
+        evaluateAndReport(env, ref, config, {
+          retryOnCleanComment,
+          retryOnReviewStart,
+          reviewStartRetryDelayMs: parseDelayMs(
+            env.REVIEW_START_RETRY_DELAY_MS,
+            REVIEW_START_RETRY_DELAY_MS,
+          ),
+          reviewPendingRetryIntervalMs: parseDelayMs(
+            env.REVIEW_PENDING_RETRY_INTERVAL_MS,
+            REVIEW_PENDING_RETRY_INTERVAL_MS,
+          ),
+          reviewPendingRetryAttempts: parseNonNegativeInteger(
+            env.REVIEW_PENDING_RETRY_ATTEMPTS,
+            REVIEW_PENDING_RETRY_ATTEMPTS,
+          ),
+        }).catch((error) => {
+          console.error(
+            `gate evaluation failed for ${ref.owner}/${ref.repo}#${ref.prNumber}:`,
+            error,
+          );
+        }),
+        reevaluateSiblingsAfterMergedPullRequest(
+          env,
+          eventName,
+          payload,
+          config,
+        ).catch((error) => {
+          console.error(
+            `same-base reevaluation failed after ${ref.owner}/${ref.repo}#${ref.prNumber} merged:`,
+            error,
+          );
+        }),
+      ]),
     );
 
     return new Response("Accepted", { status: 202 });

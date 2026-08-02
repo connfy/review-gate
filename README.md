@@ -19,9 +19,9 @@ and that status becomes your merge signal:
 
 Why you'll want it:
 
-- Event-first, with a light scheduled sweep for the one thing GitHub does not
-  reliably wake us for: PR body reactions. No GitHub Actions minutes are burned
-  watching the same PR.
+- Event-first, with a light scheduled sweep for signals without a subscribed
+  event, including PR body reactions and direct base pushes. No GitHub Actions
+  minutes are burned watching the same PR.
 - Pending reviews are queued in Workers KV and checked before the broad fallback
   sweep, so latency does not grow with the number of installed repositories.
 - One Worker plus one GitHub App covers dozens of repositories at once.
@@ -48,19 +48,25 @@ A "clean pass" counts in any of three forms:
   latest review request.
 
 An optional settled disposition can close reviewed findings without another
-review of the unchanged head. After the latest review request and a
+review of the unchanged head/base pair. After the latest review request and a
 non-dismissed formal bot review whose `commit_id` is the exact current head, an
-allowlisted human posts this exact issue comment:
+allowlisted human attests the reviewed pair with this exact issue comment:
 
 ```text
-@review-gate settle <full-40-character-current-head-sha>
+@review-gate settle <full-lowercase-40-character-head-sha> <full-lowercase-40-character-base-sha>
 ```
 
 The request, review, and disposition must have strictly increasing timestamps.
-PR body text does not count. A later review request or new head invalidates the
-signal, and the existing unresolved-thread and review-in-progress checks still
-apply. The status names the human and abbreviated head and links to the command
-comment.
+PR body text does not count. A later review request, head change, or base change
+invalidates the signal, and the existing unresolved-thread and
+review-in-progress checks still apply. The status names the human and
+abbreviated head/base pair and links to the command comment.
+
+When a merged PR advances its base branch, the subscribed `pull_request` close
+event immediately re-evaluates the other open PRs targeting that base ref. A
+direct push to the base has no subscribed event, so it remains covered by the
+rotating scheduled fallback and is invalidated when that fallback selects the
+affected PR.
 
 While the review is running, Review Gate reports `pending` when the configured
 bot leaves an `eyes` reaction on the PR body or on the latest review request
@@ -221,7 +227,7 @@ different reviewer bot or change the trigger text.
 | `CLEAN_REACTION_CONTENT` | `+1` | PR body reaction that marks a clean review pass. |
 | `REVIEW_IN_PROGRESS_REACTION_CONTENT` | `eyes` | Reaction that marks the latest head as currently under review. |
 | `REVIEW_REQUEST_TEXT` | `@codex review` | Comment text that marks the latest review request boundary for reaction freshness. |
-| `SETTLED_DISPOSITION_LOGINS` | empty (disabled) | Human GitHub logins allowed to record exact-head settled dispositions (comma-separated). |
+| `SETTLED_DISPOSITION_LOGINS` | empty (disabled) | Human GitHub logins allowed to attest exact head/base settled dispositions (comma-separated). |
 | `REVIEW_START_RETRY_DELAY_MS` | `15000` | Delay before re-checking a PR-open/review-request event for late `eyes`. |
 | `REVIEW_PENDING_RETRY_INTERVAL_MS` | `7000` | Delay between optional webhook-bound re-checks while the latest review is pending. |
 | `REVIEW_PENDING_RETRY_ATTEMPTS` | `0` | Maximum pending-review re-checks inside the webhook task. Disabled by default because scheduled sweeps catch late PR-body `+1` reactions. |

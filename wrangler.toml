@@ -8,9 +8,8 @@ compatibility_date = "2026-05-01"
 [[kv_namespaces]]
 binding = "PENDING_REVIEWS"
 
-# Event-first gate with a light scheduled sweep. The sweep catches reaction-only
-# clean signals because GitHub does not emit a standalone PR body reaction
-# webhook.
+# Event-first gate with a light scheduled sweep. The sweep catches signals with
+# no subscribed event, including PR body reactions and direct base pushes.
 #
 # Non-secret configuration (safe to commit). Override per deployment to reuse
 # the tool with any review bot:
@@ -28,7 +27,7 @@ REVIEW_IN_PROGRESS_REACTION_CONTENT = "eyes"
 # Comment text that marks a new review request/staleness boundary.
 REVIEW_REQUEST_TEXT = "@codex review"
 # Disabled by default. Comma-separated human GitHub logins allowed to record
-# an exact-head settled disposition.
+# an exact head/base settled disposition.
 SETTLED_DISPOSITION_LOGINS = ""
 # Optional webhook-bound re-checks for pending review-start events. The durable
 # late-reaction path is the scheduled sweep, so this is disabled by default.

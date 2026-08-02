@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  mergedPullRequestBaseRefFromEvent,
   pullRequestRefFromEvent,
   shouldIgnoreEvent,
   verifySignature,
@@ -9,6 +10,8 @@ import {
 
 const repository = { owner: { login: "connfy" }, name: "ai-trading-bot" };
 const installation = { id: 42 };
+const settledHeadSha = "abc123abc123abc123abc123abc123abc123abcd";
+const settledBaseSha = "def456def456def456def456def456def456def4";
 const config = {
   botLogins: new Set(["chatgpt-codex-connector[bot]"]),
   cleanText: "Codex Review: Didn't find any major issues.",
@@ -43,6 +46,25 @@ test("pull_request event resolves to PR coordinates", () => {
     prNumber: 7,
     installationId: 42,
   });
+});
+
+test("merged pull_request close resolves the advanced base ref", () => {
+  const payload = {
+    action: "closed",
+    repository,
+    installation,
+    pull_request: {
+      number: 7,
+      merged: true,
+      base: { ref: "main" },
+    },
+  };
+
+  assert.equal(
+    mergedPullRequestBaseRefFromEvent("pull_request", payload),
+    "main",
+  );
+  assert.equal(pullRequestRefFromEvent("pull_request", payload).prNumber, 7);
 });
 
 test("pull_request_review_thread event resolves to PR coordinates", () => {
@@ -107,9 +129,7 @@ test("allowlisted exact-head settled-disposition creation triggers evaluation", 
     "issue_comment",
     issueCommentPayload({
       user: "connfy",
-      body:
-        "@review-gate settle " +
-        "abc123abc123abc123abc123abc123abc123abcd",
+      body: `@review-gate settle ${settledHeadSha} ${settledBaseSha}`,
     }),
     config,
   );
@@ -124,30 +144,30 @@ test("malformed, non-allowlisted, bot, edited, and deleted dispositions stay ign
     }),
     issueCommentPayload({
       user: "other-owner",
-      body:
-        "@review-gate settle " +
-        "abc123abc123abc123abc123abc123abc123abcd",
+      body: `@review-gate settle ${settledHeadSha} ${settledBaseSha}`,
     }),
     issueCommentPayload({
       user: "connfy",
       type: "Bot",
-      body:
-        "@review-gate settle " +
-        "abc123abc123abc123abc123abc123abc123abcd",
+      body: `@review-gate settle ${settledHeadSha} ${settledBaseSha}`,
     }),
     issueCommentPayload({
       user: "connfy",
       action: "edited",
-      body:
-        "@review-gate settle " +
-        "abc123abc123abc123abc123abc123abc123abcd",
+      body: `@review-gate settle ${settledHeadSha} ${settledBaseSha}`,
     }),
     issueCommentPayload({
       user: "connfy",
       action: "deleted",
-      body:
-        "@review-gate settle " +
-        "abc123abc123abc123abc123abc123abc123abcd",
+      body: `@review-gate settle ${settledHeadSha} ${settledBaseSha}`,
+    }),
+    issueCommentPayload({
+      user: "connfy",
+      body: `@review-gate settle ${settledHeadSha}`,
+    }),
+    issueCommentPayload({
+      user: "connfy",
+      body: `@review-gate settle ${settledHeadSha} ${settledBaseSha}\n`,
     }),
   ]) {
     assert.equal(shouldIgnoreEvent("issue_comment", payload, config), true);

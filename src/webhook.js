@@ -3,7 +3,7 @@
 // move the gate forward.
 
 import {
-  extractSettledDispositionSha,
+  extractSettledDispositionShas,
   isSettledDispositionAuthor,
   resolveConfig,
 } from "./gate.js";
@@ -103,6 +103,19 @@ export function pullRequestRefFromEvent(eventName, payload) {
   };
 }
 
+export function mergedPullRequestBaseRefFromEvent(eventName, payload) {
+  if (
+    eventName !== "pull_request" ||
+    String(payload?.action ?? "") !== "closed" ||
+    payload?.pull_request?.merged !== true
+  ) {
+    return null;
+  }
+
+  const baseRef = String(payload?.pull_request?.base?.ref ?? "");
+  return baseRef.length > 0 ? baseRef : null;
+}
+
 export function shouldIgnoreEvent(eventName, payload, config) {
   if (eventName !== "issue_comment") {
     return false;
@@ -118,7 +131,7 @@ export function shouldIgnoreEvent(eventName, payload, config) {
   if (
     action === "created" &&
     isSettledDispositionAuthor(payload?.comment, config) &&
-    extractSettledDispositionSha(body) !== null
+    extractSettledDispositionShas(body) !== null
   ) {
     return false;
   }

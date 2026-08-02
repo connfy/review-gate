@@ -4,27 +4,77 @@ import { test } from "node:test";
 import {
   eventMayCreateSettledDisposition,
   maybeRetryReviewStart,
+  reevaluateSiblingsAfterMergedPullRequest,
+  reportStatus,
   runScheduledSweep,
   shouldReportStatus,
   sweepOpenPullRequests,
   sweepPendingPullRequests,
 } from "../src/index.js";
+import { evaluateGate } from "../src/gate.js";
 import { pendingReviewKey } from "../src/pending.js";
 
 const settledConfig = { settledDispositionLogins: new Set(["connfy"]) };
 const settledSha = "abc123abc123abc123abc123abc123abc123abcd";
+const settledBaseSha = "def456def456def456def456def456def456def4";
+const advancedBaseSha = "fedcba9876543210fedcba9876543210fedcba98";
 
 function settledCommentEvent({
   user = "connfy",
   type = "User",
   action = "created",
-  body = `@review-gate settle ${settledSha}`,
+  body = `@review-gate settle ${settledSha} ${settledBaseSha}`,
 } = {}) {
   return {
     action,
     issue: { number: 11, pull_request: { url: "x" } },
     comment: { user: { login: user, type }, body },
   };
+}
+
+function evaluateSettledDispositionAtBase(baseSha) {
+  const request = {
+    id: 10,
+    user: { login: "reviewer", type: "User" },
+    body: "@codex review",
+    created_at: "2026-08-02T00:01:00Z",
+  };
+  const disposition = {
+    id: 20,
+    user: { login: "connfy", type: "User" },
+    body: `@review-gate settle ${settledSha} ${settledBaseSha}`,
+    created_at: "2026-08-02T00:03:00Z",
+    html_url: "https://github.com/connfy/review-gate/pull/12#issuecomment-20",
+  };
+
+  return evaluateGate({
+    pr: {
+      number: 12,
+      draft: false,
+      state: "open",
+      head: { sha: settledSha },
+      base: { sha: baseSha },
+    },
+    issueComments: [request, disposition],
+    reviews: [
+      {
+        user: { login: "chatgpt-codex-connector[bot]" },
+        submitted_at: "2026-08-02T00:02:00Z",
+        commit_id: settledSha,
+        state: "COMMENTED",
+      },
+    ],
+    timelineEvents: [
+      {
+        event: "committed",
+        sha: settledSha,
+        author: { date: "2026-08-02T00:00:00Z" },
+      },
+      { event: "commented", ...request },
+      { event: "commented", ...disposition },
+    ],
+    config: settledConfig,
+  });
 }
 
 test("created exact settled-disposition arms the bounded propagation retry", () => {
@@ -45,7 +95,13 @@ test("only a newly created, well-formed, allowlisted human disposition arms the 
     settledCommentEvent({ type: "Bot" }),
     settledCommentEvent({ user: "eve" }),
     settledCommentEvent({ body: "@review-gate settle abc123" }),
-    settledCommentEvent({ body: `please @review-gate settle ${settledSha}` }),
+    settledCommentEvent({ body: `@review-gate settle ${settledSha}` }),
+    settledCommentEvent({
+      body: `please @review-gate settle ${settledSha} ${settledBaseSha}`,
+    }),
+    settledCommentEvent({
+      body: `@review-gate settle ${settledSha} ${settledBaseSha}\n`,
+    }),
   ];
   for (const payload of cases) {
     assert.equal(
@@ -65,6 +121,252 @@ test("only a newly created, well-formed, allowlisted human disposition arms the 
     eventMayCreateSettledDisposition("issue_comment", settledCommentEvent(), {}),
     false,
   );
+});
+
+test("merged close reevaluates a same-base sibling and invalidates its stale disposition", async () => {
+  const reevaluations = [];
+  assert.equal(evaluateSettledDispositionAtBase(settledBaseSha).state, "success");
+
+  const pullRequests = await reevaluateSiblingsAfterMergedPullRequest(
+    {
+      GITHUB_APP_ID: "app-id",
+      GITHUB_APP_PRIVATE_KEY: "private-key",
+    },
+    "pull_request",
+    {
+      action: "closed",
+      repository: { owner: { login: "connfy" }, name: "review-gate" },
+      installation: { id: 42 },
+      pull_request: {
+        number: 9,
+        merged: true,
+        base: { ref: "main" },
+      },
+    },
+    { statusContext: "review-gate/codex-clean" },
+    {
+      getInstallationToken: async () => "installation-token",
+      clientFactory: () => ({
+        async openPullRequests() {
+          return [
+            { number: 9, base: { ref: "main" } },
+            { number: 12, base: { ref: "main" } },
+            { number: 13, base: { ref: "release" } },
+          ];
+        },
+      }),
+      evaluateAndReport: async (_env, ref) => {
+        reevaluations.push({
+          ref,
+          result: evaluateSettledDispositionAtBase(advancedBaseSha),
+        });
+      },
+    },
+  );
+
+  assert.deepEqual(pullRequests, [12]);
+  assert.equal(reevaluations.length, 1);
+  assert.equal(reevaluations[0].ref.prNumber, 12);
+  assert.equal(reevaluations[0].result.state, "failure");
+  assert.equal(reevaluations[0].result.baseSha, advancedBaseSha);
+});
+
+test("non-merged close does not trigger sibling reevaluation", async () => {
+  const pullRequests = await reevaluateSiblingsAfterMergedPullRequest(
+    {},
+    "pull_request",
+    {
+      action: "closed",
+      repository: { owner: { login: "connfy" }, name: "review-gate" },
+      installation: { id: 42 },
+      pull_request: {
+        number: 9,
+        merged: false,
+        base: { ref: "main" },
+      },
+    },
+    {},
+    {
+      getInstallationToken: async () => {
+        throw new Error("unexpected token request");
+      },
+    },
+  );
+
+  assert.deepEqual(pullRequests, []);
+});
+
+test("merged close leaves pull requests on a different base untouched", async () => {
+  const pullRequests = await reevaluateSiblingsAfterMergedPullRequest(
+    {
+      GITHUB_APP_ID: "app-id",
+      GITHUB_APP_PRIVATE_KEY: "private-key",
+    },
+    "pull_request",
+    {
+      action: "closed",
+      repository: { owner: { login: "connfy" }, name: "review-gate" },
+      installation: { id: 42 },
+      pull_request: {
+        number: 9,
+        merged: true,
+        base: { ref: "main" },
+      },
+    },
+    { statusContext: "review-gate/codex-clean" },
+    {
+      getInstallationToken: async () => "installation-token",
+      clientFactory: () => ({
+        async openPullRequests() {
+          return [{ number: 13, base: { ref: "release" } }];
+        },
+      }),
+      evaluateAndReport: async () => {
+        throw new Error("unexpected sibling reevaluation");
+      },
+    },
+  );
+
+  assert.deepEqual(pullRequests, []);
+});
+
+test("merged-close sibling reevaluation is sequential", async () => {
+  let activeEvaluations = 0;
+  let maxActiveEvaluations = 0;
+  const evaluatedPullRequests = [];
+
+  const pullRequests = await reevaluateSiblingsAfterMergedPullRequest(
+    {
+      GITHUB_APP_ID: "app-id",
+      GITHUB_APP_PRIVATE_KEY: "private-key",
+    },
+    "pull_request",
+    {
+      action: "closed",
+      repository: { owner: { login: "connfy" }, name: "review-gate" },
+      installation: { id: 42 },
+      pull_request: {
+        number: 9,
+        merged: true,
+        base: { ref: "main" },
+      },
+    },
+    { statusContext: "review-gate/codex-clean" },
+    {
+      getInstallationToken: async () => "installation-token",
+      clientFactory: () => ({
+        async openPullRequests() {
+          return [12, 13, 14].map((number) => ({
+            number,
+            base: { ref: "main" },
+          }));
+        },
+      }),
+      evaluateAndReport: async (_env, ref) => {
+        activeEvaluations += 1;
+        maxActiveEvaluations = Math.max(
+          maxActiveEvaluations,
+          activeEvaluations,
+        );
+        evaluatedPullRequests.push(ref.prNumber);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        activeEvaluations -= 1;
+      },
+    },
+  );
+
+  assert.deepEqual(pullRequests, [12, 13, 14]);
+  assert.deepEqual(evaluatedPullRequests, [12, 13, 14]);
+  assert.equal(maxActiveEvaluations, 1);
+});
+
+test("a failed sibling does not block others and remains eligible for fallback", async () => {
+  const eventEvaluations = [];
+  const eventOptions = {
+    getInstallationToken: async () => "installation-token",
+    clientFactory: () => ({
+      async openPullRequests() {
+        return [12, 13].map((number) => ({
+          number,
+          base: { ref: "main" },
+        }));
+      },
+    }),
+    evaluateAndReport: async (_env, ref) => {
+      eventEvaluations.push(ref.prNumber);
+      if (ref.prNumber === 12) {
+        throw new Error("temporary sibling failure");
+      }
+    },
+  };
+
+  await assert.rejects(
+    reevaluateSiblingsAfterMergedPullRequest(
+      {
+        GITHUB_APP_ID: "app-id",
+        GITHUB_APP_PRIVATE_KEY: "private-key",
+      },
+      "pull_request",
+      {
+        action: "closed",
+        repository: { owner: { login: "connfy" }, name: "review-gate" },
+        installation: { id: 42 },
+        pull_request: {
+          number: 9,
+          merged: true,
+          base: { ref: "main" },
+        },
+      },
+      { statusContext: "review-gate/codex-clean" },
+      eventOptions,
+    ),
+    /temporary sibling failure/,
+  );
+  assert.deepEqual(eventEvaluations, [12, 13]);
+
+  const fallbackEvaluations = [];
+  const summary = await sweepOpenPullRequests(
+    {
+      GITHUB_APP_ID: "app-id",
+      GITHUB_APP_PRIVATE_KEY: "private-key",
+    },
+    { statusContext: "review-gate/codex-clean" },
+    {
+      maxInstallations: 1,
+      maxRepositories: 1,
+      maxPullRequests: 1,
+      pageSpan: 10,
+      rotationSeed: 0,
+      listInstallations: async () => [{ id: 42 }],
+      getInstallationToken: async () => "installation-token",
+      listRepositories: async () => [
+        { owner: { login: "connfy" }, name: "review-gate" },
+      ],
+      clientFactory: () => ({
+        async openPullRequests() {
+          return [{ number: 12 }];
+        },
+        async latestStatusForContext() {
+          return null;
+        },
+      }),
+      evaluate: async (_client, { prNumber }) => {
+        fallbackEvaluations.push(prNumber);
+        return {
+          sha: `head-${prNumber}`,
+          generation: `head-${prNumber}`,
+          prState: "open",
+          state: "success",
+          description: "Review gate passed.",
+        };
+      },
+      reportStatus: async () => {},
+    },
+  );
+
+  assert.deepEqual(fallbackEvaluations, [12]);
+  assert.equal(summary.pullRequests, 1);
+  assert.equal(summary.updated, 1);
 });
 
 test("review-start retry observes a later PR body clean reaction after bounded pending rechecks", async () => {
@@ -218,17 +520,162 @@ test("scheduled sweep rewrites a settled disposition audit link", () => {
     shouldReportStatus(
       {
         state: "success",
-        description: "Settled by @connfy for abc123abc123.",
+        description:
+          "Settled by @connfy for head abc123abc123 on base def456def456.",
         target_url: "https://github.com/old-comment",
       },
       {
         state: "success",
-        description: "Settled by @connfy for abc123abc123.",
+        description:
+          "Settled by @connfy for head abc123abc123 on base def456def456.",
         targetUrl: "https://github.com/new-comment",
       },
     ),
     true,
   );
+});
+
+test("stale success is replaced with failure after the base advances", async () => {
+  let pullRequestCalls = 0;
+  const statuses = [];
+  const published = await reportStatus(
+    {
+      async pullRequest() {
+        pullRequestCalls += 1;
+        return {
+          head: { sha: settledSha },
+          base: { sha: advancedBaseSha },
+        };
+      },
+      async setStatus(...args) {
+        statuses.push(args);
+      },
+    },
+    {
+      prNumber: 12,
+      sha: settledSha,
+      baseSha: settledBaseSha,
+      state: "success",
+      description: "Review gate passed.",
+    },
+  );
+
+  assert.equal(published, false);
+  assert.equal(pullRequestCalls, 1);
+  assert.deepEqual(statuses, [
+    [
+      settledSha,
+      {
+        state: "failure",
+        description: "Pull request changed during evaluation; retry required.",
+      },
+    ],
+  ]);
+});
+
+test("stale success abstains when a newer head owns the status", async () => {
+  let pullRequestCalls = 0;
+  const statuses = [];
+  const published = await reportStatus(
+    {
+      async pullRequest() {
+        pullRequestCalls += 1;
+        return {
+          head: { sha: "new-head" },
+          base: { sha: advancedBaseSha },
+        };
+      },
+      async setStatus(...args) {
+        statuses.push(args);
+      },
+    },
+    {
+      prNumber: 12,
+      sha: settledSha,
+      baseSha: settledBaseSha,
+      state: "success",
+      description: "Review gate passed.",
+    },
+  );
+
+  assert.equal(published, false);
+  assert.equal(pullRequestCalls, 1);
+  assert.deepEqual(statuses, []);
+});
+
+test("success is published when the live head and base still match", async () => {
+  let pullRequestCalls = 0;
+  const statuses = [];
+  const published = await reportStatus(
+    {
+      async pullRequest() {
+        pullRequestCalls += 1;
+        return {
+          head: { sha: settledSha },
+          base: { sha: settledBaseSha },
+        };
+      },
+      async setStatus(...args) {
+        statuses.push(args);
+      },
+    },
+    {
+      prNumber: 12,
+      sha: settledSha,
+      baseSha: settledBaseSha,
+      state: "success",
+      description: "Review gate passed.",
+      targetUrl: "https://github.com/connfy/review-gate/pull/9",
+    },
+  );
+
+  assert.equal(published, true);
+  assert.equal(pullRequestCalls, 1);
+  assert.deepEqual(statuses, [
+    [
+      settledSha,
+      {
+        state: "success",
+        description: "Review gate passed.",
+        targetUrl: "https://github.com/connfy/review-gate/pull/9",
+      },
+    ],
+  ]);
+});
+
+test("failure publication does not re-fetch the pull request", async () => {
+  let pullRequestCalls = 0;
+  const statuses = [];
+  const published = await reportStatus(
+    {
+      async pullRequest() {
+        pullRequestCalls += 1;
+      },
+      async setStatus(...args) {
+        statuses.push(args);
+      },
+    },
+    {
+      prNumber: 12,
+      sha: settledSha,
+      baseSha: settledBaseSha,
+      state: "failure",
+      description: "Review required for the latest head.",
+    },
+  );
+
+  assert.equal(published, true);
+  assert.equal(pullRequestCalls, 0);
+  assert.deepEqual(statuses, [
+    [
+      settledSha,
+      {
+        state: "failure",
+        description: "Review required for the latest head.",
+        targetUrl: undefined,
+      },
+    ],
+  ]);
 });
 
 test("scheduled pending sweep evaluates a queued PR and removes a terminal result", async () => {
