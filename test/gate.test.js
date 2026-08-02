@@ -569,6 +569,37 @@ test("settled disposition fails closed without a command comment URL", () => {
   assert.equal(evaluateGate(fixture).state, "failure");
 });
 
+test("a newer timeline-only review request invalidates a prior disposition", () => {
+  const fixture = settledDispositionFixture();
+  assert.equal(evaluateGate(fixture).state, "success");
+
+  // The new request surfaces in the already-fetched timeline before the
+  // issue-comments endpoint catches up, so it exists only in the timeline.
+  fixture.timelineEvents.push({
+    event: "commented",
+    id: 30,
+    user: { login: "reviewer", type: "User" },
+    body: "@codex review",
+    created_at: "2026-08-02T00:04:00Z",
+  });
+
+  assert.equal(evaluateGate(fixture).state, "failure");
+});
+
+test("an issue-comments-only review request keeps the disposition fail-closed", () => {
+  const fixture = settledDispositionFixture();
+  // The request is visible in issue comments but cannot be matched to the
+  // timeline yet, so the disposition must fail closed rather than pass.
+  fixture.issueComments.push({
+    id: 30,
+    user: { login: "reviewer", type: "User" },
+    body: "@codex review",
+    created_at: "2026-08-02T00:04:00Z",
+  });
+
+  assert.equal(evaluateGate(fixture).state, "failure");
+});
+
 test("clean comment before latest head does not pass", () => {
   const result = evaluateGate({
     pr: pr(),

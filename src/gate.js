@@ -201,6 +201,19 @@ function latestReviewRequestComment(issueComments, timelineEvents, config) {
       timelineIndex,
     });
   }
+  // A fresh review request can surface in the already-fetched timeline before
+  // the issue-comments endpoint catches up. Include qualifying timeline
+  // commented events so a newer timeline-only request still invalidates a
+  // prior disposition. Issue-comment candidates are pushed first, so the strict
+  // reduce below keeps their timestamp on a same-index tie.
+  timelineEvents.forEach((event, index) => {
+    if (event?.event === "commented" && isReviewRequestComment(event, config)) {
+      candidates.push({
+        timestamp: parseTimestamp(event?.created_at),
+        timelineIndex: index,
+      });
+    }
+  });
   return candidates.reduce(
     (latest, candidate) =>
       latest === null || candidate.timelineIndex > latest.timelineIndex
