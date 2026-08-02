@@ -44,20 +44,20 @@ Review Gate는 딱 그 애매한 순간을 없애주는 작은 도구예요. Cod
 - 리뷰 봇이 PR 본문에 `+1` 반응을 남겼고, 그 반응이 최신 코드 업데이트와 최신 리뷰 요청
   이후에 만들어진 경우입니다.
 
-선택 기능인 settled disposition(결론 기록)을 사용하면 변경되지 않은 head를 다시
+선택 기능인 settled disposition(결론 기록)을 사용하면 변경되지 않은 head/base 쌍을 다시
 리뷰받지 않고도 이미 검토한 지적의 결론을 남길 수 있습니다. 최신 리뷰 요청 뒤에 설정된
-봇이 현재 head와 `commit_id`가 정확히 같은 정식 리뷰를 남기고, 허용된 사람이 아래 이슈
-코멘트를 정확히 작성합니다.
+봇이 현재 head와 `commit_id`가 정확히 같은 정식 리뷰를 남기고, 허용된 사람이 검토된 쌍을
+아래 이슈 코멘트로 정확히 증명합니다.
 
 ```text
-@review-gate settle <현재-head의-40자리-전체-SHA>
+@review-gate settle <현재-head의-소문자-40자리-전체-SHA> <현재-base의-소문자-40자리-전체-SHA>
 ```
 
 세 시각은 모두 있어야 하며, 리뷰 요청 → 봇 리뷰 → 결론 기록 순으로 엄격히 뒤에 와야
-합니다. PR 본문 문구는 인정하지 않습니다. 이후 리뷰 요청이나 새 커밋이 생기면 신호는
-무효가 되며, 해결되지 않은 현재 스레드가 0개이고 리뷰가 진행 중이지 않아야 한다는 기존
-조건도 그대로 적용됩니다. 상태에는 사람 계정과 줄인 head가 표시되고 명령 코멘트로
-연결됩니다.
+합니다. PR 본문 문구는 인정하지 않습니다. 이후 리뷰 요청, head 변경, base 변경이 생기면
+신호는 무효가 되며, 해결되지 않은 현재 스레드가 0개이고 리뷰가 진행 중이지 않아야 한다는
+기존 조건도 그대로 적용됩니다. 상태에는 사람 계정과 줄인 head/base 쌍이 표시되고 명령
+코멘트로 연결됩니다.
 
 리뷰가 진행 중일 때는 정해둔 봇이 PR 본문이나 최신 리뷰 요청 코멘트에 `eyes` 반응을 남기면
 표시가 `pending`이 됩니다. 이때 표시 문구는 특정 봇 이름을 박지 않고 이렇게 나갑니다.
@@ -210,7 +210,7 @@ GitHub가 아예 합치기 버튼을 못 누르게 막아주길 원한다면, �
 | `CLEAN_REACTION_CONTENT` | `+1` | 통과로 인정할 PR 본문 반응 |
 | `REVIEW_IN_PROGRESS_REACTION_CONTENT` | `eyes` | 최신 코드를 리뷰 중이라고 볼 반응 |
 | `REVIEW_REQUEST_TEXT` | `@codex review` | PR 본문 반응이 최신인지 판단할 때 쓰는 리뷰 요청 문구 |
-| `SETTLED_DISPOSITION_LOGINS` | 비어 있음(꺼짐) | exact-head settled disposition을 기록할 수 있는 GitHub 사람 계정 목록(쉼표 구분) |
+| `SETTLED_DISPOSITION_LOGINS` | 비어 있음(꺼짐) | exact head/base settled disposition을 증명할 수 있는 GitHub 사람 계정 목록(쉼표 구분) |
 | `REVIEW_START_RETRY_DELAY_MS` | `15000` | PR 생성/리뷰 요청 직후 늦게 붙는 `eyes`를 다시 확인하기 전 기다리는 시간 |
 | `REVIEW_PENDING_RETRY_INTERVAL_MS` | `7000` | 진행 중 리뷰에서 선택적 웹훅 내부 재확인 사이에 기다리는 시간 |
 | `REVIEW_PENDING_RETRY_ATTEMPTS` | `0` | 웹훅 작업 안에서 진행할 최대 pending 재확인 횟수. 늦은 PR 본문 `+1`은 예약 sweep이 잡기 때문에 기본값은 꺼져 있습니다. |

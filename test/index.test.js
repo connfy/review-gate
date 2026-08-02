@@ -13,12 +13,13 @@ import { pendingReviewKey } from "../src/pending.js";
 
 const settledConfig = { settledDispositionLogins: new Set(["connfy"]) };
 const settledSha = "abc123abc123abc123abc123abc123abc123abcd";
+const settledBaseSha = "def456def456def456def456def456def456def4";
 
 function settledCommentEvent({
   user = "connfy",
   type = "User",
   action = "created",
-  body = `@review-gate settle ${settledSha}`,
+  body = `@review-gate settle ${settledSha} ${settledBaseSha}`,
 } = {}) {
   return {
     action,
@@ -45,7 +46,13 @@ test("only a newly created, well-formed, allowlisted human disposition arms the 
     settledCommentEvent({ type: "Bot" }),
     settledCommentEvent({ user: "eve" }),
     settledCommentEvent({ body: "@review-gate settle abc123" }),
-    settledCommentEvent({ body: `please @review-gate settle ${settledSha}` }),
+    settledCommentEvent({ body: `@review-gate settle ${settledSha}` }),
+    settledCommentEvent({
+      body: `please @review-gate settle ${settledSha} ${settledBaseSha}`,
+    }),
+    settledCommentEvent({
+      body: `@review-gate settle ${settledSha} ${settledBaseSha}\n`,
+    }),
   ];
   for (const payload of cases) {
     assert.equal(
@@ -218,12 +225,14 @@ test("scheduled sweep rewrites a settled disposition audit link", () => {
     shouldReportStatus(
       {
         state: "success",
-        description: "Settled by @connfy for abc123abc123.",
+        description:
+          "Settled by @connfy for head abc123abc123 on base def456def456.",
         target_url: "https://github.com/old-comment",
       },
       {
         state: "success",
-        description: "Settled by @connfy for abc123abc123.",
+        description:
+          "Settled by @connfy for head abc123abc123 on base def456def456.",
         targetUrl: "https://github.com/new-comment",
       },
     ),

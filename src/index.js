@@ -7,7 +7,7 @@
 
 import {
   evaluateGate,
-  extractSettledDispositionSha,
+  extractSettledDispositionShas,
   isSettledDispositionAuthor,
   resolveConfig,
 } from "./gate.js";
@@ -199,7 +199,7 @@ export function eventMayCreateSettledDisposition(eventName, payload, config) {
     eventName === "issue_comment" &&
     String(payload?.action ?? "") === "created" &&
     isSettledDispositionAuthor(payload?.comment, config) &&
-    extractSettledDispositionSha(payload?.comment?.body) !== null
+    extractSettledDispositionShas(payload?.comment?.body) !== null
   );
 }
 

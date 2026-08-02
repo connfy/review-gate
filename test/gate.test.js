@@ -7,7 +7,13 @@ import {
 } from "../src/gate.js";
 
 function pr({ draft = false, state = "open" } = {}) {
-  return { number: 123, draft, state, head: { sha: "abc123" } };
+  return {
+    number: 123,
+    draft,
+    state,
+    head: { sha: "abc123" },
+    base: { sha: "def456" },
+  };
 }
 
 function timelineAfterHead(commentIds = []) {
@@ -35,6 +41,7 @@ function timelineHeadAt(timestamp) {
 }
 
 const fullHeadSha = "abc123abc123abc123abc123abc123abc123abcd";
+const fullBaseSha = "def456def456def456def456def456def456def4";
 
 function settledDispositionFixture(overrides = {}) {
   const request = {
@@ -46,7 +53,7 @@ function settledDispositionFixture(overrides = {}) {
   const disposition = {
     id: 20,
     user: { login: "connfy", type: "User" },
-    body: `@review-gate settle ${fullHeadSha}`,
+    body: `@review-gate settle ${fullHeadSha} ${fullBaseSha}`,
     created_at: "2026-08-02T00:03:00Z",
     html_url: "https://github.com/connfy/example/pull/123#issuecomment-20",
   };
@@ -56,6 +63,7 @@ function settledDispositionFixture(overrides = {}) {
       draft: false,
       state: "open",
       head: { sha: fullHeadSha },
+      base: { sha: fullBaseSha },
     },
     issueComments: [request, disposition],
     reviews: [
@@ -343,8 +351,10 @@ test("allowlisted human exact-head disposition passes after a formal bot review"
   assert.equal(result.state, "success");
   assert.equal(
     result.description,
-    "Settled by @connfy for abc123abc123.",
+    "Settled by @connfy for head abc123abc123 on base def456def456.",
   );
+  assert.match(result.details[0], new RegExp(fullHeadSha));
+  assert.match(result.details[0], new RegExp(fullBaseSha));
   assert.equal(
     result.targetUrl,
     "https://github.com/connfy/example/pull/123#issuecomment-20",
@@ -357,22 +367,35 @@ test("settled disposition is default-off and requires an allowlisted human", () 
 
   fixture.issueComments[1] = {
     ...fixture.issueComments[1],
+    user: { login: "not-allowlisted", type: "User" },
+  };
+  assert.equal(evaluateGate(fixture).state, "failure");
+
+  fixture.issueComments[1] = {
+    ...fixture.issueComments[1],
     user: { login: "connfy", type: "Bot" },
   };
   assert.equal(evaluateGate(fixture).state, "failure");
 });
 
-test("settled disposition accepts only the exact full-head issue-comment command", () => {
+test("settled disposition accepts only the exact full head/base issue-comment command", () => {
   for (const body of [
     "@review-gate settle abc123",
-    "@review-gate settle abc123abc123abc123abc123abc123abc123abce",
-    `please @review-gate settle ${fullHeadSha}`,
-    `@review-gate settle ${fullHeadSha} approved`,
-    ` @review-gate settle ${fullHeadSha}`,
-    `@review-gate settle  ${fullHeadSha}`,
-    `@review-gate settle ${fullHeadSha}\n`,
-    `@REVIEW-GATE settle ${fullHeadSha}`,
-    `@review-gate settle ${fullHeadSha.toUpperCase()}`,
+    `@review-gate settle ${fullHeadSha}`,
+    `@review-gate settle ${"a".repeat(40)} ${fullBaseSha}`,
+    `@review-gate settle ${fullHeadSha} ${"b".repeat(40)}`,
+    `@review-gate settle ${fullHeadSha} abc123`,
+    `@review-gate settle ${fullHeadSha} abc123abc123abc123abc123abc123abc123abce`,
+    `please @review-gate settle ${fullHeadSha} ${fullBaseSha}`,
+    `@review-gate settle ${fullHeadSha} ${fullBaseSha} approved`,
+    ` @review-gate settle ${fullHeadSha} ${fullBaseSha}`,
+    `@review-gate settle  ${fullHeadSha} ${fullBaseSha}`,
+    `@review-gate settle ${fullHeadSha}  ${fullBaseSha}`,
+    `@review-gate settle ${fullHeadSha} ${fullBaseSha}\n`,
+    `@review-gate settle ${fullHeadSha}\n${fullBaseSha}`,
+    `@REVIEW-GATE settle ${fullHeadSha} ${fullBaseSha}`,
+    `@review-gate settle ${fullHeadSha.toUpperCase()} ${fullBaseSha}`,
+    `@review-gate settle ${fullHeadSha} ${fullBaseSha.toUpperCase()}`,
   ]) {
     const fixture = settledDispositionFixture();
     fixture.issueComments[1] = { ...fixture.issueComments[1], body };
@@ -382,7 +405,7 @@ test("settled disposition accepts only the exact full-head issue-comment command
   const fixture = settledDispositionFixture();
   fixture.pr = {
     ...fixture.pr,
-    body: `@review-gate settle ${fullHeadSha}`,
+    body: `@review-gate settle ${fullHeadSha} ${fullBaseSha}`,
   };
   fixture.issueComments = [fixture.issueComments[0]];
   fixture.timelineEvents = fixture.timelineEvents.slice(0, 2);
@@ -491,7 +514,7 @@ test("settled disposition requires a non-dismissed formal bot review on exact he
   }
 });
 
-test("later request, new head, and unresolved thread block disposition", () => {
+test("later request, new head, base advance, and unresolved thread block disposition", () => {
   const laterRequest = {
     id: 30,
     user: { login: "reviewer", type: "User" },
@@ -535,6 +558,13 @@ test("later request, new head, and unresolved thread block disposition", () => {
     author: { date: "2026-08-02T00:04:00Z" },
   });
   assert.equal(evaluateGate(newHead).state, "failure");
+
+  const advancedBase = settledDispositionFixture();
+  advancedBase.pr = {
+    ...advancedBase.pr,
+    base: { sha: "fedcba9876543210fedcba9876543210fedcba98" },
+  };
+  assert.equal(evaluateGate(advancedBase).state, "failure");
 
   const unresolved = evaluateGate(
     settledDispositionFixture({

@@ -33,8 +33,9 @@ threads, and timeline before changing the status.
 
 The optional settled-disposition signal is also derived only from current
 GitHub evidence. It requires a latest-head request, a later non-dismissed formal
-bot review for that exact head, and a later exact command from an allowlisted
-human. No extra invalidation store or mutation authority is introduced.
+bot review for that exact head, and a later exact head/base attestation from an
+allowlisted human. Either live SHA changing invalidates the signal. No extra
+invalidation store or mutation authority is introduced.
 
 ## Operational boundaries
 

@@ -120,11 +120,16 @@ function includesText(body, text) {
   return String(body ?? "").toLowerCase().includes(needle.toLowerCase());
 }
 
-export function extractSettledDispositionSha(body) {
+export function extractSettledDispositionShas(body) {
   const match = String(body ?? "").match(
-    /^@review-gate settle ([0-9a-f]{40})$/,
+    /^@review-gate settle ([0-9a-f]{40}) ([0-9a-f]{40})$/,
   );
-  return match?.[1]?.toLowerCase() ?? null;
+  return match
+    ? {
+        headSha: match[1],
+        baseSha: match[2],
+      }
+    : null;
 }
 
 export function isSettledDispositionAuthor(comment, config) {
@@ -500,6 +505,7 @@ function reviewIsInProgress({
 
 function settledDisposition({
   sha,
+  baseSha,
   issueComments,
   issueEyesReactions,
   reviews,
@@ -542,9 +548,11 @@ function settledDisposition({
 
   let latest = null;
   for (const comment of issueComments) {
+    const attestedPair = extractSettledDispositionShas(comment?.body);
     if (
       !isSettledDispositionAuthor(comment, resolved) ||
-      extractSettledDispositionSha(comment?.body) !== sha.toLowerCase()
+      attestedPair?.headSha !== sha ||
+      attestedPair?.baseSha !== baseSha
     ) {
       continue;
     }
@@ -579,9 +587,9 @@ function settledDisposition({
         timelineIndex,
         login: loginFor(comment.user),
         url,
-        detail: `settled disposition by @${loginFor(comment.user)} at ${
-          comment.created_at
-        }`,
+        detail:
+          `settled disposition by @${loginFor(comment.user)} for ` +
+          `head ${sha} and base ${baseSha} at ${comment.created_at}`,
       };
     }
   }
@@ -771,6 +779,7 @@ export function evaluateGate({
   const resolved = resolveConfig(config);
   const prNumber = Number(pr.number);
   const sha = String(pr.head.sha);
+  const baseSha = String(pr.base?.sha ?? "");
   const prState = String(pr.state ?? "open");
   const generation = reviewGeneration(
     issueComments,
@@ -804,6 +813,7 @@ export function evaluateGate({
   if (cleanEvents.length === 0) {
     disposition = settledDisposition({
       sha,
+      baseSha,
       issueComments,
       issueEyesReactions,
       reviews,
@@ -850,6 +860,7 @@ export function evaluateGate({
       return {
         prNumber,
         sha,
+        baseSha,
         prState,
         generation,
         state: "pending",
@@ -882,6 +893,7 @@ export function evaluateGate({
     return {
       prNumber,
       sha,
+      baseSha,
       prState,
       generation,
       state: "failure",
@@ -893,13 +905,14 @@ export function evaluateGate({
   return {
     prNumber,
     sha,
+    baseSha,
     prState,
     generation,
     state: "success",
     description:
       disposition === null
         ? "Review gate passed."
-        : `Settled by @${disposition.login} for ${sha.slice(0, 12)}.`,
+        : `Settled by @${disposition.login} for head ${sha.slice(0, 12)} on base ${baseSha.slice(0, 12)}.`,
     details: cleanEvents,
     ...(disposition?.url ? { targetUrl: disposition.url } : {}),
   };

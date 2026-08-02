@@ -3,7 +3,7 @@
 // move the gate forward.
 
 import {
-  extractSettledDispositionSha,
+  extractSettledDispositionShas,
   isSettledDispositionAuthor,
   resolveConfig,
 } from "./gate.js";
@@ -118,7 +118,7 @@ export function shouldIgnoreEvent(eventName, payload, config) {
   if (
     action === "created" &&
     isSettledDispositionAuthor(payload?.comment, config) &&
-    extractSettledDispositionSha(body) !== null
+    extractSettledDispositionShas(body) !== null
   ) {
     return false;
   }
