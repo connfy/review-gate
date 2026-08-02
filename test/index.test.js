@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  maybeRetryIssueComment,
   maybeRetryReviewStart,
   runScheduledSweep,
   shouldReportStatus,
@@ -47,6 +48,69 @@ test("review-start retry observes a later PR body clean reaction after bounded p
 
   assert.deepEqual(sleeps, [15_000, 7_000]);
   assert.deepEqual(reports, ["pending", "success"]);
+  assert.equal(result.state, "success");
+});
+
+test("disposition creation retries after GitHub API lag", async () => {
+  const sleeps = [];
+  const result = await maybeRetryIssueComment({
+    result: {
+      sha: "abc123",
+      state: "failure",
+      description: "No clean review pass after the latest head update.",
+    },
+    retryOnDispositionMutation: true,
+    evaluate: async () => ({
+      sha: "abc123",
+      state: "success",
+      description: "Settled by @connfy for abc123.",
+    }),
+    sleepFn: async (delayMs) => {
+      sleeps.push(delayMs);
+    },
+  });
+
+  assert.deepEqual(sleeps, [3_000]);
+  assert.equal(result.state, "success");
+});
+
+test("disposition edit retries even when stale APIs still report success", async () => {
+  const sleeps = [];
+  const result = await maybeRetryIssueComment({
+    result: {
+      sha: "abc123",
+      state: "success",
+      description: "Settled by @connfy for abc123.",
+    },
+    retryOnDispositionMutation: true,
+    evaluate: async () => ({
+      sha: "abc123",
+      state: "failure",
+      description: "No clean review pass after the latest head update.",
+    }),
+    sleepFn: async (delayMs) => {
+      sleeps.push(delayMs);
+    },
+  });
+
+  assert.deepEqual(sleeps, [3_000]);
+  assert.equal(result.state, "failure");
+});
+
+test("clean-comment retry preserves its existing success fast path", async () => {
+  const result = await maybeRetryIssueComment({
+    result: {
+      sha: "abc123",
+      state: "success",
+      description: "Review gate passed.",
+    },
+    retryOnCleanComment: true,
+    retryOnDispositionMutation: false,
+    evaluate: async () => {
+      throw new Error("unexpected retry");
+    },
+  });
+
   assert.equal(result.state, "success");
 });
 

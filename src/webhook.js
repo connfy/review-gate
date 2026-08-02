@@ -116,10 +116,7 @@ export function shouldIgnoreEvent(eventName, payload, config) {
   const action = String(payload?.action ?? "");
   const body = String(payload?.comment?.body ?? "");
   if (!botLogins.has(author)) {
-    if (
-      isSettledDispositionAuthor(payload?.comment, config) &&
-      extractSettledDispositionSha(body, config) !== null
-    ) {
+    if (eventMayMutateSettledDisposition(eventName, payload, config)) {
       return false;
     }
     return !includesText(body, reviewRequestText);
@@ -132,4 +129,23 @@ export function shouldIgnoreEvent(eventName, payload, config) {
   // A clean-pass comment should not normally be edited or deleted, but if the
   // configured bot does change one, re-evaluate instead of trusting stale state.
   return action !== "edited" && action !== "deleted";
+}
+
+export function eventMayMutateSettledDisposition(eventName, payload, config) {
+  if (
+    eventName !== "issue_comment" ||
+    !payload?.issue?.pull_request ||
+    !isSettledDispositionAuthor(payload?.comment, config)
+  ) {
+    return false;
+  }
+
+  const action = String(payload?.action ?? "");
+  if (action === "edited" || action === "deleted") {
+    return true;
+  }
+  return (
+    action === "created" &&
+    extractSettledDispositionSha(payload?.comment?.body, config) !== null
+  );
 }

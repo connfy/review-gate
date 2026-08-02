@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  eventMayMutateSettledDisposition,
   pullRequestRefFromEvent,
   shouldIgnoreEvent,
   verifySignature,
@@ -103,17 +104,18 @@ test("review request issue comments trigger evaluation", () => {
 });
 
 test("allowlisted exact-head settled-disposition comments trigger evaluation", () => {
-  const ignored = shouldIgnoreEvent(
-    "issue_comment",
-    issueCommentPayload({
-      user: "connfy",
-      body:
-        "@review-gate settle " +
-        "abc123abc123abc123abc123abc123abc123abcd",
-    }),
-    config,
-  );
+  const payload = issueCommentPayload({
+    user: "connfy",
+    body:
+      "@review-gate settle " +
+      "abc123abc123abc123abc123abc123abc123abcd",
+  });
+  const ignored = shouldIgnoreEvent("issue_comment", payload, config);
   assert.equal(ignored, false);
+  assert.equal(
+    eventMayMutateSettledDisposition("issue_comment", payload, config),
+    true,
+  );
 });
 
 test("malformed, non-allowlisted, and bot settled-disposition comments are ignored", () => {
@@ -138,6 +140,45 @@ test("malformed, non-allowlisted, and bot settled-disposition comments are ignor
   ]) {
     assert.equal(shouldIgnoreEvent("issue_comment", payload, config), true);
   }
+});
+
+test("allowlisted human comment edits and deletions trigger disposition revocation checks", () => {
+  for (const action of ["edited", "deleted"]) {
+    const ignored = shouldIgnoreEvent(
+      "issue_comment",
+      issueCommentPayload({
+        user: "connfy",
+        body: action === "edited" ? "ordinary replacement text" : "",
+        action,
+      }),
+      config,
+    );
+    assert.equal(ignored, false);
+    assert.equal(
+      eventMayMutateSettledDisposition(
+        "issue_comment",
+        issueCommentPayload({
+          user: "connfy",
+          body: action === "edited" ? "ordinary replacement text" : "",
+          action,
+        }),
+        config,
+      ),
+      true,
+    );
+  }
+});
+
+test("ordinary allowlisted human comments remain ignored when created", () => {
+  const ignored = shouldIgnoreEvent(
+    "issue_comment",
+    issueCommentPayload({
+      user: "connfy",
+      body: "ordinary comment",
+    }),
+    config,
+  );
+  assert.equal(ignored, true);
 });
 
 test("configured bot clean issue comments trigger evaluation", () => {

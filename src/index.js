@@ -13,6 +13,7 @@ import {
   RepoClient,
 } from "./github.js";
 import {
+  eventMayMutateSettledDisposition,
   pullRequestRefFromEvent,
   shouldIgnoreEvent,
   verifySignature,
@@ -25,7 +26,7 @@ import {
   trackPendingReview,
 } from "./pending.js";
 
-const CLEAN_COMMENT_RETRY_DELAY_MS = 3_000;
+const ISSUE_COMMENT_RETRY_DELAY_MS = 3_000;
 const REVIEW_START_RETRY_DELAY_MS = 15_000;
 const REVIEW_PENDING_RETRY_INTERVAL_MS = 7_000;
 const REVIEW_PENDING_RETRY_ATTEMPTS = 0;
@@ -233,10 +234,12 @@ async function evaluateAndReport(env, ref, config, options = {}) {
 
   let result = await evaluateFromGitHub(client, ref, config);
 
-  if (options.retryOnCleanComment && result.state !== "success") {
-    await sleep(CLEAN_COMMENT_RETRY_DELAY_MS);
-    result = await evaluateFromGitHub(client, ref, config);
-  }
+  result = await maybeRetryIssueComment({
+    result,
+    retryOnCleanComment: options.retryOnCleanComment,
+    retryOnDispositionMutation: options.retryOnDispositionMutation,
+    evaluate: () => evaluateFromGitHub(client, ref, config),
+  });
 
   await reportStatus(client, result);
 
@@ -258,6 +261,25 @@ async function evaluateAndReport(env, ref, config, options = {}) {
   await trackPendingReviewSafely(env, ref, result);
 
   return result;
+}
+
+export async function maybeRetryIssueComment({
+  result,
+  retryOnCleanComment,
+  retryOnDispositionMutation,
+  evaluate,
+  sleepFn = sleep,
+  retryDelayMs = ISSUE_COMMENT_RETRY_DELAY_MS,
+}) {
+  const needsRetry =
+    retryOnDispositionMutation ||
+    (retryOnCleanComment && result.state !== "success");
+  if (!needsRetry) {
+    return result;
+  }
+
+  await sleepFn(retryDelayMs);
+  return evaluate();
 }
 
 function emptyOpenSweepSummary() {
@@ -798,6 +820,11 @@ export default {
       eventName === "issue_comment" &&
       String(payload?.action ?? "") === "created" &&
       String(payload?.comment?.body ?? "").includes(config.cleanText);
+    const retryOnDispositionMutation = eventMayMutateSettledDisposition(
+      eventName,
+      payload,
+      config,
+    );
     const retryOnReviewStart = eventMayStartReview(eventName, payload, config);
 
     // Do the GitHub round-trips after responding so the webhook delivery is
@@ -805,6 +832,7 @@ export default {
     ctx.waitUntil(
       evaluateAndReport(env, ref, config, {
         retryOnCleanComment,
+        retryOnDispositionMutation,
         retryOnReviewStart,
         reviewStartRetryDelayMs: parseDelayMs(
           env.REVIEW_START_RETRY_DELAY_MS,
