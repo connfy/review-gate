@@ -204,12 +204,23 @@ export function eventMayCreateSettledDisposition(eventName, payload, config) {
   );
 }
 
-async function reportStatus(client, result) {
+export async function reportStatus(client, result) {
+  if (result.state === "success") {
+    const livePr = await client.pullRequest(result.prNumber);
+    if (
+      String(livePr?.head?.sha ?? "") !== result.sha ||
+      String(livePr?.base?.sha ?? "") !== result.baseSha
+    ) {
+      return false;
+    }
+  }
+
   await client.setStatus(result.sha, {
     state: result.state,
     description: result.description,
     targetUrl: result.targetUrl,
   });
+  return true;
 }
 
 async function trackPendingReviewSafely(env, ref, result) {

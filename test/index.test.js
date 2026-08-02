@@ -5,6 +5,7 @@ import {
   eventMayCreateSettledDisposition,
   maybeRetryReviewStart,
   reevaluateSiblingsAfterMergedPullRequest,
+  reportStatus,
   runScheduledSweep,
   shouldReportStatus,
   sweepOpenPullRequests,
@@ -532,6 +533,111 @@ test("scheduled sweep rewrites a settled disposition audit link", () => {
     ),
     true,
   );
+});
+
+test("stale success is not published after the base advances", async () => {
+  let pullRequestCalls = 0;
+  const statuses = [];
+  const published = await reportStatus(
+    {
+      async pullRequest() {
+        pullRequestCalls += 1;
+        return {
+          head: { sha: settledSha },
+          base: { sha: advancedBaseSha },
+        };
+      },
+      async setStatus(...args) {
+        statuses.push(args);
+      },
+    },
+    {
+      prNumber: 12,
+      sha: settledSha,
+      baseSha: settledBaseSha,
+      state: "success",
+      description: "Review gate passed.",
+    },
+  );
+
+  assert.equal(published, false);
+  assert.equal(pullRequestCalls, 1);
+  assert.deepEqual(statuses, []);
+});
+
+test("success is published when the live head and base still match", async () => {
+  let pullRequestCalls = 0;
+  const statuses = [];
+  const published = await reportStatus(
+    {
+      async pullRequest() {
+        pullRequestCalls += 1;
+        return {
+          head: { sha: settledSha },
+          base: { sha: settledBaseSha },
+        };
+      },
+      async setStatus(...args) {
+        statuses.push(args);
+      },
+    },
+    {
+      prNumber: 12,
+      sha: settledSha,
+      baseSha: settledBaseSha,
+      state: "success",
+      description: "Review gate passed.",
+      targetUrl: "https://github.com/connfy/review-gate/pull/9",
+    },
+  );
+
+  assert.equal(published, true);
+  assert.equal(pullRequestCalls, 1);
+  assert.deepEqual(statuses, [
+    [
+      settledSha,
+      {
+        state: "success",
+        description: "Review gate passed.",
+        targetUrl: "https://github.com/connfy/review-gate/pull/9",
+      },
+    ],
+  ]);
+});
+
+test("failure publication does not re-fetch the pull request", async () => {
+  let pullRequestCalls = 0;
+  const statuses = [];
+  const published = await reportStatus(
+    {
+      async pullRequest() {
+        pullRequestCalls += 1;
+      },
+      async setStatus(...args) {
+        statuses.push(args);
+      },
+    },
+    {
+      prNumber: 12,
+      sha: settledSha,
+      baseSha: settledBaseSha,
+      state: "failure",
+      description: "Review required for the latest head.",
+    },
+  );
+
+  assert.equal(published, true);
+  assert.equal(pullRequestCalls, 0);
+  assert.deepEqual(statuses, [
+    [
+      settledSha,
+      {
+        state: "failure",
+        description: "Review required for the latest head.",
+        targetUrl: undefined,
+      },
+    ],
+  ]);
 });
 
 test("scheduled pending sweep evaluates a queued PR and removes a terminal result", async () => {
