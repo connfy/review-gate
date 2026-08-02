@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  eventMayMutateReviewBotResponse,
   eventMayMutateSettledDisposition,
   eventMayMutateReviewRequest,
   pullRequestRefFromEvent,
@@ -209,6 +210,62 @@ test("review request edits and deletions trigger reevaluation", () => {
     true,
   );
   assert.equal(shouldIgnoreEvent("issue_comment", deletedPayload, config), false);
+});
+
+test("bot finding comments and mutations trigger disposition reevaluation", () => {
+  const enabledConfig = {
+    ...config,
+    settledDispositionLogins: new Set(["connfy"]),
+  };
+  for (const payload of [
+    issueCommentPayload({
+      user: "chatgpt-codex-connector[bot]",
+      type: "Bot",
+      body:
+        "Codex Review: findings.\n\n" +
+        "**Reviewed commit:** `abc123abc1`",
+    }),
+    issueCommentPayload({
+      user: "chatgpt-codex-connector[bot]",
+      type: "Bot",
+      body: "edited finding",
+      action: "edited",
+    }),
+    issueCommentPayload({
+      user: "chatgpt-codex-connector[bot]",
+      type: "Bot",
+      body: "",
+      action: "deleted",
+    }),
+  ]) {
+    assert.equal(
+      eventMayMutateReviewBotResponse(
+        "issue_comment",
+        payload,
+        enabledConfig,
+      ),
+      true,
+    );
+    assert.equal(
+      shouldIgnoreEvent("issue_comment", payload, enabledConfig),
+      false,
+    );
+  }
+});
+
+test("bot finding comments remain ignored when dispositions are disabled", () => {
+  const payload = issueCommentPayload({
+    user: "chatgpt-codex-connector[bot]",
+    type: "Bot",
+    body: "Codex Review: findings.\n\n**Reviewed commit:** `abc123abc1`",
+  });
+  assert.equal(
+    eventMayMutateReviewBotResponse("issue_comment", payload, {
+      ...config,
+      settledDispositionLogins: new Set(),
+    }),
+    false,
+  );
 });
 
 test("unrelated comment edits remain ignored", () => {

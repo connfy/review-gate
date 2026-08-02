@@ -3,6 +3,7 @@
 // move the gate forward.
 
 import {
+  extractReviewedCommitPrefix,
   extractSettledDispositionSha,
   isSettledDispositionAuthor,
   resolveConfig,
@@ -125,6 +126,13 @@ export function shouldIgnoreEvent(eventName, payload, config) {
     return !includesText(body, reviewRequestText);
   }
 
+  if (
+    action === "created" &&
+    resolveConfig(config).settledDispositionLogins.size > 0 &&
+    extractReviewedCommitPrefix(body) !== null
+  ) {
+    return false;
+  }
   if (action === "created") {
     return !body.includes(cleanText);
   }
@@ -173,5 +181,28 @@ export function eventMayMutateReviewRequest(eventName, payload, config) {
   return (
     includesText(payload?.comment?.body, reviewRequestText) ||
     includesText(payload?.changes?.body?.from, reviewRequestText)
+  );
+}
+
+export function eventMayMutateReviewBotResponse(eventName, payload, config) {
+  if (eventName !== "issue_comment" || !payload?.issue?.pull_request) {
+    return false;
+  }
+
+  const { botLogins, settledDispositionLogins } = resolveConfig(config);
+  if (
+    settledDispositionLogins.size === 0 ||
+    !botLogins.has(loginFor(payload?.comment?.user))
+  ) {
+    return false;
+  }
+
+  const action = String(payload?.action ?? "");
+  if (action === "edited" || action === "deleted") {
+    return true;
+  }
+  return (
+    action === "created" &&
+    extractReviewedCommitPrefix(payload?.comment?.body) !== null
   );
 }

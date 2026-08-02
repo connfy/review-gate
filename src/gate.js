@@ -181,7 +181,7 @@ function reviewRequestTimestamp(comment, config) {
   if (botLogins.has(author) || !includesText(comment?.body, reviewRequestText)) {
     return null;
   }
-  return parseTimestamp(comment?.created_at);
+  return parseTimestamp(comment?.updated_at) ?? parseTimestamp(comment?.created_at);
 }
 
 function latestReviewRequestTime(issueComments, timelineEvents, config) {
@@ -453,17 +453,23 @@ function currentHeadReviewBotResponses({
     }
     const body = String(comment?.body ?? "");
     const reviewedPrefix = extractReviewedCommitPrefix(body);
+    const timelineEvent = issueCommentTimelineEvent(timelineEvents, comment);
+    const timelineIndex =
+      timelineEvent === null ? null : timelineEvents.indexOf(timelineEvent);
     const qualifies =
       shaMatchesPrefix(sha, reviewedPrefix) ||
       (includesText(body, cleanText) &&
         issueCommentQualifies(comment, sha, timelineEvents, config));
-    const timestamp = parseTimestamp(comment?.created_at);
-    const timelineEvent = issueCommentTimelineEvent(timelineEvents, comment);
+    const timestamp =
+      parseTimestamp(comment?.updated_at) ?? parseTimestamp(comment?.created_at);
     if (qualifies && timestamp !== null) {
       responses.push({
         timestamp,
         timelineIndex:
-          timelineEvent === null ? null : timelineEvents.indexOf(timelineEvent),
+          parseTimestamp(comment?.updated_at) !==
+          parseTimestamp(comment?.created_at)
+            ? null
+            : timelineIndex,
         detail: `review bot comment at ${comment.created_at}`,
       });
     }

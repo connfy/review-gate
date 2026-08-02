@@ -13,6 +13,7 @@ import {
   RepoClient,
 } from "./github.js";
 import {
+  eventMayMutateReviewBotResponse,
   eventMayMutateSettledDisposition,
   eventMayMutateReviewRequest,
   pullRequestRefFromEvent,
@@ -832,6 +833,11 @@ export default {
       payload,
       config,
     );
+    const retryOnReviewBotResponseMutation = eventMayMutateReviewBotResponse(
+      eventName,
+      payload,
+      config,
+    );
     const retryOnReviewStart = eventMayStartReview(eventName, payload, config);
 
     // Do the GitHub round-trips after responding so the webhook delivery is
@@ -840,7 +846,9 @@ export default {
       evaluateAndReport(env, ref, config, {
         retryOnCleanComment,
         retryOnDispositionMutation:
-          retryOnDispositionMutation || retryOnReviewRequestMutation,
+          retryOnDispositionMutation ||
+          retryOnReviewRequestMutation ||
+          retryOnReviewBotResponseMutation,
         retryOnReviewStart,
         reviewStartRetryDelayMs: parseDelayMs(
           env.REVIEW_START_RETRY_DELAY_MS,

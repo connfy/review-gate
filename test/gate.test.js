@@ -469,6 +469,7 @@ test("current-head bot finding comment can precede the disposition", () => {
       "Codex Review: two findings.\n\n" +
       `**Reviewed commit:** \`${fullHeadSha.slice(0, 10)}\``,
     created_at: "2026-08-02T00:02:00Z",
+    updated_at: "2026-08-02T00:02:00Z",
   };
   fixture.issueComments.splice(1, 0, botComment);
   fixture.timelineEvents.splice(2, 0, { event: "commented", ...botComment });
@@ -498,6 +499,26 @@ test("a later review request invalidates an earlier settled disposition", () => 
   };
   fixture.issueComments.push(laterRequest);
   fixture.timelineEvents.push({ event: "commented", ...laterRequest });
+  const result = evaluateGate(fixture);
+
+  assert.equal(result.state, "failure");
+});
+
+test("editing an older comment into a review request invalidates a prior disposition", () => {
+  const fixture = settledDispositionFixture();
+  const editedRequest = {
+    id: 5,
+    user: { login: "reviewer", type: "User" },
+    body: "@codex review",
+    created_at: "2026-08-01T23:59:00Z",
+    updated_at: "2026-08-02T00:04:00Z",
+  };
+  fixture.issueComments.push(editedRequest);
+  fixture.timelineEvents.splice(1, 0, {
+    event: "commented",
+    ...editedRequest,
+    updated_at: undefined,
+  });
   const result = evaluateGate(fixture);
 
   assert.equal(result.state, "failure");
