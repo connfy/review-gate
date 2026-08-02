@@ -268,6 +268,28 @@ test("bot finding comments remain ignored when dispositions are disabled", () =>
   );
 });
 
+test("bot review submissions and mutations request an API-lag retry", () => {
+  const enabledConfig = {
+    ...config,
+    settledDispositionLogins: new Set(["connfy"]),
+  };
+  for (const action of ["submitted", "edited", "dismissed"]) {
+    assert.equal(
+      eventMayMutateReviewBotResponse(
+        "pull_request_review",
+        {
+          action,
+          review: {
+            user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
+          },
+        },
+        enabledConfig,
+      ),
+      true,
+    );
+  }
+});
+
 test("unrelated comment edits remain ignored", () => {
   const payload = issueCommentPayload({
     user: "reviewer",

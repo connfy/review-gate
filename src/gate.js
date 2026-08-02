@@ -460,16 +460,15 @@ function currentHeadReviewBotResponses({
       shaMatchesPrefix(sha, reviewedPrefix) ||
       (includesText(body, cleanText) &&
         issueCommentQualifies(comment, sha, timelineEvents, config));
-    const timestamp =
-      parseTimestamp(comment?.updated_at) ?? parseTimestamp(comment?.created_at);
+    const createdTime = parseTimestamp(comment?.created_at);
+    const updatedTime = parseTimestamp(comment?.updated_at);
+    const timestamp = updatedTime ?? createdTime;
+    const wasEdited =
+      createdTime !== null && updatedTime !== null && updatedTime !== createdTime;
     if (qualifies && timestamp !== null) {
       responses.push({
         timestamp,
-        timelineIndex:
-          parseTimestamp(comment?.updated_at) !==
-          parseTimestamp(comment?.created_at)
-            ? null
-            : timelineIndex,
+        timelineIndex: wasEdited ? null : timelineIndex,
         detail: `review bot comment at ${comment.created_at}`,
       });
     }
@@ -538,7 +537,7 @@ function settledDisposition({
 
   const headBoundaryIndex = latestHeadBoundaryIndex(timelineEvents, sha);
   const headBoundaryTime = latestHeadBoundaryTime(timelineEvents, sha);
-  const request = latestReviewRequest(issueComments, timelineEvents, resolved);
+  const request = latestReviewRequest(issueComments, [], resolved);
   if (
     headBoundaryIndex === null ||
     headBoundaryTime === null ||
@@ -557,7 +556,17 @@ function settledDisposition({
     requestTimelineEvent == null
       ? null
       : timelineEvents.indexOf(requestTimelineEvent);
+  const requestComment = issueComments.find(
+    (comment) => Number(comment?.id) === Number(request.id),
+  );
+  const requestCreatedTime = parseTimestamp(requestComment?.created_at);
+  const requestUpdatedTime = parseTimestamp(requestComment?.updated_at);
+  const requestWasEdited =
+    requestCreatedTime !== null &&
+    requestUpdatedTime !== null &&
+    requestUpdatedTime !== requestCreatedTime;
   if (
+    requestComment == null ||
     requestTimelineIndex === null ||
     requestTimelineIndex <= headBoundaryIndex
   ) {
@@ -573,7 +582,8 @@ function settledDisposition({
     }).filter(
       (response) =>
         response.timestamp > request.timestamp ||
-        (response.timestamp === request.timestamp &&
+        (!requestWasEdited &&
+          response.timestamp === request.timestamp &&
           requestTimelineIndex !== null &&
           response.timelineIndex !== null &&
           response.timelineIndex > requestTimelineIndex),
@@ -613,13 +623,16 @@ function settledDisposition({
       continue;
     }
     const dispositionSha = extractSettledDispositionSha(comment?.body, resolved);
-    const timestamp = parseTimestamp(comment?.created_at);
+    const createdTime = parseTimestamp(comment?.created_at);
+    const updatedTime = parseTimestamp(comment?.updated_at);
+    const timestamp = createdTime;
     const timelineEvent = issueCommentTimelineEvent(timelineEvents, comment);
     const timelineIndex =
       timelineEvent === null ? null : timelineEvents.indexOf(timelineEvent);
     if (
       dispositionSha !== sha.toLowerCase() ||
       timestamp === null ||
+      (updatedTime !== null && updatedTime !== createdTime) ||
       timestamp < boundaryTime ||
       timelineEvent === null ||
       timelineEventTimestamp(timelineEvent) !== timestamp ||

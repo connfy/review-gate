@@ -424,6 +424,25 @@ test("settled disposition must be present on the issue timeline", () => {
   assert.equal(result.state, "failure");
 });
 
+test("edited settled-disposition commands fail closed", () => {
+  const fixture = settledDispositionFixture();
+  fixture.issueComments[1] = {
+    ...fixture.issueComments[1],
+    updated_at: "2026-08-02T00:04:00Z",
+  };
+  const result = evaluateGate(fixture);
+
+  assert.equal(result.state, "failure");
+});
+
+test("deleted review request cannot survive through timeline history", () => {
+  const fixture = settledDispositionFixture();
+  fixture.issueComments = [fixture.issueComments[1]];
+  const result = evaluateGate(fixture);
+
+  assert.equal(result.state, "failure");
+});
+
 test("review request must follow the latest head in timeline order", () => {
   const fixture = settledDispositionFixture();
   fixture.timelineEvents = [
@@ -469,7 +488,6 @@ test("current-head bot finding comment can precede the disposition", () => {
       "Codex Review: two findings.\n\n" +
       `**Reviewed commit:** \`${fullHeadSha.slice(0, 10)}\``,
     created_at: "2026-08-02T00:02:00Z",
-    updated_at: "2026-08-02T00:02:00Z",
   };
   fixture.issueComments.splice(1, 0, botComment);
   fixture.timelineEvents.splice(2, 0, { event: "commented", ...botComment });
@@ -519,6 +537,18 @@ test("editing an older comment into a review request invalidates a prior disposi
     ...editedRequest,
     updated_at: undefined,
   });
+  const result = evaluateGate(fixture);
+
+  assert.equal(result.state, "failure");
+});
+
+test("same-second edited review request needs a strictly later bot response", () => {
+  const fixture = settledDispositionFixture();
+  fixture.issueComments[0] = {
+    ...fixture.issueComments[0],
+    created_at: "2026-08-02T00:01:00Z",
+    updated_at: "2026-08-02T00:02:00Z",
+  };
   const result = evaluateGate(fixture);
 
   assert.equal(result.state, "failure");

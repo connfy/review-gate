@@ -185,19 +185,25 @@ export function eventMayMutateReviewRequest(eventName, payload, config) {
 }
 
 export function eventMayMutateReviewBotResponse(eventName, payload, config) {
-  if (eventName !== "issue_comment" || !payload?.issue?.pull_request) {
-    return false;
-  }
-
   const { botLogins, settledDispositionLogins } = resolveConfig(config);
-  if (
-    settledDispositionLogins.size === 0 ||
-    !botLogins.has(loginFor(payload?.comment?.user))
-  ) {
+  if (settledDispositionLogins.size === 0) {
     return false;
   }
 
   const action = String(payload?.action ?? "");
+  if (eventName === "pull_request_review") {
+    return (
+      botLogins.has(loginFor(payload?.review?.user)) &&
+      new Set(["submitted", "edited", "dismissed"]).has(action)
+    );
+  }
+  if (
+    eventName !== "issue_comment" ||
+    !payload?.issue?.pull_request ||
+    !botLogins.has(loginFor(payload?.comment?.user))
+  ) {
+    return false;
+  }
   if (action === "edited" || action === "deleted") {
     return true;
   }
