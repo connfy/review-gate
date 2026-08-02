@@ -766,6 +766,19 @@ test("review-evidence invalidation requires a newer exact-head disposition", () 
   assert.equal(redisposedResult.targetUrl, redisposed.issueComments[1].html_url);
 });
 
+test("same-second disposition cannot clear an evidence invalidation", () => {
+  const fixture = settledDispositionFixture({
+    currentStatus: {
+      state: "failure",
+      description: REVIEW_EVIDENCE_CHANGED_DESCRIPTION,
+      created_at: "2026-08-02T00:03:00Z",
+    },
+  });
+  const result = evaluateGate(fixture);
+
+  assert.equal(result.state, "failure");
+});
+
 test("clean comment before latest head does not pass", () => {
   const result = evaluateGate({
     pr: pr(),

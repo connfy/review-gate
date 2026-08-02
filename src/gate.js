@@ -637,9 +637,8 @@ function settledDisposition({
     headBoundaryTime,
     request.timestamp,
     botResponse.timestamp,
-    reviewEvidenceChangeBoundary(currentStatus)?.timestamp ??
-      Number.NEGATIVE_INFINITY,
   );
+  const evidenceChange = reviewEvidenceChangeBoundary(currentStatus);
   let latest = null;
   for (const comment of issueComments) {
     if (!isSettledDispositionAuthor(comment, resolved)) {
@@ -657,6 +656,7 @@ function settledDisposition({
       timestamp === null ||
       (updatedTime !== null && updatedTime !== createdTime) ||
       timestamp < boundaryTime ||
+      (evidenceChange !== null && timestamp <= evidenceChange.timestamp) ||
       timelineEvent === null ||
       timelineEventTimestamp(timelineEvent) !== timestamp ||
       (timestamp === botResponse.timestamp &&

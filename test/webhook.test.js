@@ -151,24 +151,28 @@ test("malformed, non-allowlisted, and bot settled-disposition comments are ignor
 
 test("allowlisted human comment edits and deletions trigger disposition revocation checks", () => {
   for (const action of ["edited", "deleted"]) {
+    const payload = issueCommentPayload({
+      user: "connfy",
+      body:
+        action === "edited"
+          ? "ordinary replacement text"
+          : "@review-gate settle abc123abc123abc123abc123abc123abc123abcd",
+      previousBody:
+        action === "edited"
+          ? "@review-gate settle abc123abc123abc123abc123abc123abc123abcd"
+          : undefined,
+      action,
+    });
     const ignored = shouldIgnoreEvent(
       "issue_comment",
-      issueCommentPayload({
-        user: "connfy",
-        body: action === "edited" ? "ordinary replacement text" : "",
-        action,
-      }),
+      payload,
       config,
     );
     assert.equal(ignored, false);
     assert.equal(
       eventMayMutateSettledDisposition(
         "issue_comment",
-        issueCommentPayload({
-          user: "connfy",
-          body: action === "edited" ? "ordinary replacement text" : "",
-          action,
-        }),
+        payload,
         config,
       ),
       true,
@@ -186,6 +190,27 @@ test("ordinary allowlisted human comments remain ignored when created", () => {
     config,
   );
   assert.equal(ignored, true);
+});
+
+test("ordinary allowlisted comment edits and deletions do not revoke dispositions", () => {
+  for (const payload of [
+    issueCommentPayload({
+      user: "connfy",
+      body: "new ordinary text",
+      previousBody: "old ordinary text",
+      action: "edited",
+    }),
+    issueCommentPayload({
+      user: "connfy",
+      body: "ordinary text",
+      action: "deleted",
+    }),
+  ]) {
+    assert.equal(
+      eventMayMutateSettledDisposition("issue_comment", payload, config),
+      false,
+    );
+  }
 });
 
 test("review request edits and deletions trigger reevaluation", () => {

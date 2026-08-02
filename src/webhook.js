@@ -152,13 +152,18 @@ export function eventMayMutateSettledDisposition(eventName, payload, config) {
   }
 
   const action = String(payload?.action ?? "");
-  if (action === "edited" || action === "deleted") {
-    return true;
-  }
-  return (
-    action === "created" &&
-    extractSettledDispositionSha(payload?.comment?.body, config) !== null
+  const currentSha = extractSettledDispositionSha(payload?.comment?.body, config);
+  const previousSha = extractSettledDispositionSha(
+    payload?.changes?.body?.from,
+    config,
   );
+  if (action === "edited") {
+    return currentSha !== null || previousSha !== null;
+  }
+  if (action === "deleted") {
+    return currentSha !== null;
+  }
+  return action === "created" && currentSha !== null;
 }
 
 export function eventMayMutateReviewRequest(eventName, payload, config) {
