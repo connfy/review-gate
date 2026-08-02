@@ -220,7 +220,8 @@ export function shouldReportStatus(currentStatus, result) {
   }
   return (
     String(currentStatus.state ?? "") !== result.state ||
-    String(currentStatus.description ?? "") !== result.description
+    String(currentStatus.description ?? "") !== result.description ||
+    String(currentStatus.target_url ?? "") !== String(result.targetUrl ?? "")
   );
 }
 

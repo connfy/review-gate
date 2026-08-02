@@ -544,6 +544,55 @@ test("same-timestamp request bot response and disposition respect timeline order
   assert.equal(result.state, "success");
 });
 
+test("latest same-timestamp bot response invalidates an earlier disposition", () => {
+  const fixture = settledDispositionFixture();
+  const laterReview = {
+    id: 25,
+    user: { login: "chatgpt-codex-connector[bot]" },
+    body: "Codex Review\n\nA later finding.",
+    submitted_at: "2026-08-02T00:03:00Z",
+    commit_id: fullHeadSha,
+  };
+  fixture.reviews.push(laterReview);
+  fixture.timelineEvents.push({
+    event: "reviewed",
+    id: laterReview.id,
+    user: laterReview.user,
+    submitted_at: laterReview.submitted_at,
+    commit_id: laterReview.commit_id,
+  });
+  const result = evaluateGate(fixture);
+
+  assert.equal(result.state, "failure");
+});
+
+test("ambiguous same-timestamp bot response order fails closed", () => {
+  const fixture = settledDispositionFixture();
+  fixture.reviews.push({
+    user: { login: "chatgpt-codex-connector[bot]" },
+    body: "Codex Review\n\nA response missing from the timeline.",
+    submitted_at: "2026-08-02T00:02:00Z",
+    commit_id: fullHeadSha,
+  });
+  const result = evaluateGate(fixture);
+
+  assert.equal(result.state, "failure");
+});
+
+test("latest review request missing from the timeline fails closed", () => {
+  const fixture = settledDispositionFixture();
+  const missingRequest = {
+    id: 30,
+    user: { login: "connfy", type: "User" },
+    body: "@codex review",
+    created_at: "2026-08-02T00:03:00Z",
+  };
+  fixture.issueComments.push(missingRequest);
+  const result = evaluateGate(fixture);
+
+  assert.equal(result.state, "failure");
+});
+
 test("a later in-progress eyes signal blocks an earlier settled disposition", () => {
   const fixture = settledDispositionFixture({
     issueEyesReactions: [

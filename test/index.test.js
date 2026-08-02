@@ -233,6 +233,39 @@ test("scheduled sweep rewrites a success status when the disposition audit descr
   );
 });
 
+test("scheduled sweep rewrites a settled status when its audit link changes", () => {
+  assert.equal(
+    shouldReportStatus(
+      {
+        state: "success",
+        description: "Settled by @connfy for abc123abc123.",
+        target_url: "https://github.com/connfy/example/pull/1#issuecomment-old",
+      },
+      {
+        state: "success",
+        description: "Settled by @connfy for abc123abc123.",
+        targetUrl: "https://github.com/connfy/example/pull/1#issuecomment-new",
+      },
+    ),
+    true,
+  );
+  assert.equal(
+    shouldReportStatus(
+      {
+        state: "success",
+        description: "Settled by @connfy for abc123abc123.",
+        target_url: "https://github.com/connfy/example/pull/1#issuecomment-new",
+      },
+      {
+        state: "success",
+        description: "Settled by @connfy for abc123abc123.",
+        targetUrl: "https://github.com/connfy/example/pull/1#issuecomment-new",
+      },
+    ),
+    false,
+  );
+});
+
 test("scheduled pending sweep evaluates a queued PR and removes a terminal result", async () => {
   const ref = {
     installationId: 42,

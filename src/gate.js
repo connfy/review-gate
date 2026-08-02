@@ -477,20 +477,13 @@ function currentHeadReviewBotResponses({
       timestamp !== null
     ) {
       const reviewId = Number(review?.id);
-      const timelineEvent = timelineEvents.find((event) => {
-        if (event?.event !== "reviewed") {
-          return false;
-        }
-        const eventId = Number(event?.id);
-        if (Number.isFinite(reviewId) && Number.isFinite(eventId)) {
-          return reviewId === eventId;
-        }
-        return (
-          parseTimestamp(event?.submitted_at ?? event?.created_at) === timestamp &&
-          loginFor(event?.user ?? event?.actor) === loginFor(review?.user) &&
-          String(event?.commit_id ?? "") === sha
-        );
-      });
+      const timelineEvent = Number.isFinite(reviewId)
+        ? timelineEvents.find(
+            (event) =>
+              event?.event === "reviewed" &&
+              Number(event?.id) === reviewId,
+          )
+        : undefined;
       responses.push({
         timestamp,
         timelineIndex:
@@ -506,10 +499,20 @@ function currentHeadReviewBotResponses({
 }
 
 function latestTimestampedEvent(events) {
-  return events.reduce(
-    (latest, event) =>
-      latest === null || event.timestamp > latest.timestamp ? event : latest,
-    null,
+  if (events.length === 0) {
+    return null;
+  }
+  const latestTimestamp = Math.max(...events.map((event) => event.timestamp));
+  const latestEvents = events.filter(
+    (event) => event.timestamp === latestTimestamp,
+  );
+  if (latestEvents.some((event) => event.timelineIndex === null)) {
+    return null;
+  }
+  return latestEvents.reduce((latest, event) =>
+    latest === null || event.timelineIndex > latest.timelineIndex
+      ? event
+      : latest,
   );
 }
 
@@ -546,7 +549,7 @@ function settledDisposition({
             Number(event?.id) === Number(request.id),
         );
   const requestTimelineIndex =
-    requestTimelineEvent === null
+    requestTimelineEvent == null
       ? null
       : timelineEvents.indexOf(requestTimelineEvent);
   if (request.id !== null && requestTimelineIndex === null) {
@@ -568,24 +571,25 @@ function settledDisposition({
           response.timelineIndex > requestTimelineIndex),
     ),
   );
-  if (botResponse === null) {
+  if (botResponse === null || botResponse.timelineIndex === null) {
     return null;
   }
 
-  const latestInProgress = latestTimestampedEvent(
-    reviewInProgressEvents({
-      sha,
-      issueComments,
-      issueEyesReactions,
-      reviewRequestReactions,
-      timelineEvents,
-      config: resolved,
-    }),
+  const latestInProgressTime = reviewInProgressEvents({
+    sha,
+    issueComments,
+    issueEyesReactions,
+    reviewRequestReactions,
+    timelineEvents,
+    config: resolved,
+  }).reduce(
+    (latest, event) =>
+      latest === null ? event.timestamp : Math.max(latest, event.timestamp),
+    null,
   );
   if (
-    latestInProgress !== null &&
-    (latestInProgress.timestamp > botResponse.timestamp ||
-      latestInProgress.timestamp === botResponse.timestamp)
+    latestInProgressTime !== null &&
+    latestInProgressTime >= botResponse.timestamp
   ) {
     return null;
   }
