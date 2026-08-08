@@ -519,17 +519,37 @@ function settledDisposition({
   }
 
   const headBoundaryIndex = latestHeadBoundaryIndex(timelineEvents, sha);
+  if (headBoundaryIndex === null) {
+    return null;
+  }
   const request = latestReviewRequestComment(
     issueComments,
     timelineEvents,
     resolved,
   );
-  if (
-    headBoundaryIndex === null ||
-    request === null ||
-    request.timestamp === null ||
-    request.timelineIndex <= headBoundaryIndex
-  ) {
+  const requestObserved =
+    issueComments.some((comment) => isReviewRequestComment(comment, resolved)) ||
+    timelineEvents.some(
+      (event) =>
+        event?.event === "commented" && isReviewRequestComment(event, resolved),
+    );
+  let anchorTime = null;
+  if (request !== null) {
+    if (request.timestamp === null || request.timelineIndex <= headBoundaryIndex) {
+      return null;
+    }
+    anchorTime = request.timestamp;
+  } else if (requestObserved) {
+    // A request comment exists but cannot be correlated to the timeline yet
+    // (fetch lag). A fresh request must invalidate settlement, so fail closed.
+    return null;
+  } else {
+    // Auto-fired round: no review-request comment exists for this PR at all
+    // (the initial review fires on open/ready). The latest head boundary
+    // anchors the round in place of a request comment.
+    anchorTime = latestHeadBoundaryTime(timelineEvents, sha);
+  }
+  if (anchorTime === null) {
     return null;
   }
   if (
@@ -570,7 +590,7 @@ function settledDisposition({
         resolved.botLogins.has(loginFor(review?.user)) &&
         String(review?.state ?? "").toLowerCase() !== "dismissed" &&
         String(review?.commit_id ?? "") === sha &&
-        parseTimestamp(review?.submitted_at) > request.timestamp &&
+        parseTimestamp(review?.submitted_at) > anchorTime &&
         parseTimestamp(review?.submitted_at) < timestamp,
     );
     const url = String(comment?.html_url ?? "");

@@ -26,9 +26,10 @@ CLEAN_REACTION_CONTENT = "+1"
 REVIEW_IN_PROGRESS_REACTION_CONTENT = "eyes"
 # Comment text that marks a new review request/staleness boundary.
 REVIEW_REQUEST_TEXT = "@codex review"
-# Disabled by default. Comma-separated human GitHub logins allowed to record
-# an exact head/base settled disposition.
-SETTLED_DISPOSITION_LOGINS = ""
+# Comma-separated human GitHub logins allowed to record an exact head/base
+# settled disposition. Takes effect on the next deploy — deploying this value
+# is the activation gate (owner-held; empty string keeps the path disabled).
+SETTLED_DISPOSITION_LOGINS = "connfy"
 # Optional webhook-bound re-checks for pending review-start events. The durable
 # late-reaction path is the scheduled sweep, so this is disabled by default.
 REVIEW_PENDING_RETRY_INTERVAL_MS = "7000"
