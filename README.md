@@ -48,15 +48,25 @@ A "clean pass" counts in any of three forms:
   latest review request.
 
 An optional settled disposition can close reviewed findings without another
-review of the unchanged head/base pair. After the latest review request and a
-non-dismissed formal bot review whose `commit_id` is the exact current head, an
-allowlisted human attests the reviewed pair with this exact issue comment:
+review of the unchanged head/base pair. The round anchor depends on how the
+round started:
+
+- **Explicitly requested round:** the latest review-request comment newer than
+  the latest head update anchors the round.
+- **Auto-fired round:** when no review-request comment exists anywhere for the
+  PR (the initial review fires on open/ready), the latest head boundary itself
+  anchors the round. A request comment that exists but cannot be correlated to
+  the timeline yet still fails closed.
+
+After that anchor and a later non-dismissed formal bot review whose `commit_id`
+is the exact current head, an allowlisted human attests the reviewed pair with
+this exact issue comment:
 
 ```text
 @review-gate settle <full-lowercase-40-character-head-sha> <full-lowercase-40-character-base-sha>
 ```
 
-The request, review, and disposition must have strictly increasing timestamps.
+The anchor, review, and disposition must have strictly increasing timestamps.
 PR body text does not count. A later review request, head change, or base change
 invalidates the signal, and the existing unresolved-thread and
 review-in-progress checks still apply. The status names the human and
