@@ -98,6 +98,25 @@ function latestHeadBoundaryTime(timelineEvents, sha) {
   return boundaryTime;
 }
 
+// Server-generated head boundary for the requestless settlement anchor.
+// Git author/committer dates are client-controlled: a future-dated commit
+// would push a git-derived anchor past every real review and block
+// settlement forever. PR creation and head-ref events are stamped by GitHub.
+function latestServerHeadBoundaryTime(timelineEvents, prCreatedAt) {
+  let boundaryTime = parseTimestamp(prCreatedAt);
+  for (const event of timelineEvents) {
+    if (!HEAD_REF_EVENTS.has(String(event?.event ?? ""))) {
+      continue;
+    }
+    const eventTime = parseTimestamp(event?.created_at);
+    if (eventTime !== null) {
+      boundaryTime =
+        boundaryTime === null ? eventTime : Math.max(boundaryTime, eventTime);
+    }
+  }
+  return boundaryTime;
+}
+
 function issueCommentIdsAfterHead(timelineEvents, sha) {
   const boundaryIndex = latestHeadBoundaryIndex(timelineEvents, sha);
   const commentIds = new Set();
@@ -506,6 +525,7 @@ function reviewIsInProgress({
 function settledDisposition({
   sha,
   baseSha,
+  prCreatedAt,
   issueComments,
   issueEyesReactions,
   reviews,
@@ -519,17 +539,38 @@ function settledDisposition({
   }
 
   const headBoundaryIndex = latestHeadBoundaryIndex(timelineEvents, sha);
+  if (headBoundaryIndex === null) {
+    return null;
+  }
   const request = latestReviewRequestComment(
     issueComments,
     timelineEvents,
     resolved,
   );
-  if (
-    headBoundaryIndex === null ||
-    request === null ||
-    request.timestamp === null ||
-    request.timelineIndex <= headBoundaryIndex
-  ) {
+  const requestObserved =
+    issueComments.some((comment) => isReviewRequestComment(comment, resolved)) ||
+    timelineEvents.some(
+      (event) =>
+        event?.event === "commented" && isReviewRequestComment(event, resolved),
+    );
+  let anchorTime = null;
+  if (request !== null) {
+    if (request.timestamp === null || request.timelineIndex <= headBoundaryIndex) {
+      return null;
+    }
+    anchorTime = request.timestamp;
+  } else if (requestObserved) {
+    // A request comment exists but cannot be correlated to the timeline yet
+    // (fetch lag). A fresh request must invalidate settlement, so fail closed.
+    return null;
+  } else {
+    // Auto-fired round: no review-request comment exists for this PR at all
+    // (the initial review fires on open/ready). A server-generated boundary
+    // anchors the round in place of a request comment; commit_id binding on
+    // the qualifying review keeps an early anchor safe.
+    anchorTime = latestServerHeadBoundaryTime(timelineEvents, prCreatedAt);
+  }
+  if (anchorTime === null) {
     return null;
   }
   if (
@@ -570,7 +611,7 @@ function settledDisposition({
         resolved.botLogins.has(loginFor(review?.user)) &&
         String(review?.state ?? "").toLowerCase() !== "dismissed" &&
         String(review?.commit_id ?? "") === sha &&
-        parseTimestamp(review?.submitted_at) > request.timestamp &&
+        parseTimestamp(review?.submitted_at) > anchorTime &&
         parseTimestamp(review?.submitted_at) < timestamp,
     );
     const url = String(comment?.html_url ?? "");
@@ -814,6 +855,7 @@ export function evaluateGate({
     disposition = settledDisposition({
       sha,
       baseSha,
+      prCreatedAt: pr?.created_at,
       issueComments,
       issueEyesReactions,
       reviews,

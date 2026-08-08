@@ -62,6 +62,7 @@ function settledDispositionFixture(overrides = {}) {
       number: 123,
       draft: false,
       state: "open",
+      created_at: "2026-08-02T00:00:30Z",
       head: { sha: fullHeadSha },
       base: { sha: fullBaseSha },
     },
@@ -482,6 +483,78 @@ test("settled disposition requires request, review, and command in strict time o
 test("settled disposition fails closed when the current head is missing from the timeline", () => {
   const fixture = settledDispositionFixture();
   fixture.timelineEvents.shift();
+
+  assert.equal(evaluateGate(fixture).state, "failure");
+});
+
+function autoFiredSettledDispositionFixture() {
+  const fixture = settledDispositionFixture();
+  fixture.issueComments = fixture.issueComments.filter(
+    (comment) => comment.id !== 10,
+  );
+  fixture.timelineEvents = fixture.timelineEvents.filter(
+    (event) => event?.id !== 10,
+  );
+  return fixture;
+}
+
+test("auto-fired initial round settles from the head boundary anchor", () => {
+  const result = evaluateGate(autoFiredSettledDispositionFixture());
+
+  assert.equal(result.state, "success");
+  assert.equal(
+    result.description,
+    "Settled by @connfy for head abc123abc123 on base def456def456.",
+  );
+});
+
+test("auto-fired settlement requires the review to postdate the head boundary", () => {
+  const fixture = autoFiredSettledDispositionFixture();
+  fixture.reviews[0] = {
+    ...fixture.reviews[0],
+    submitted_at: "2026-08-01T23:59:00Z",
+  };
+
+  assert.equal(evaluateGate(fixture).state, "failure");
+});
+
+test("auto-fired settlement fails closed without any server boundary time", () => {
+  const fixture = autoFiredSettledDispositionFixture();
+  delete fixture.pr.created_at;
+  fixture.timelineEvents[0] = { event: "committed", sha: fullHeadSha };
+
+  assert.equal(evaluateGate(fixture).state, "failure");
+});
+
+test("a future-dated head commit cannot block auto-fired settlement", () => {
+  const fixture = autoFiredSettledDispositionFixture();
+  fixture.timelineEvents[0] = {
+    event: "committed",
+    sha: fullHeadSha,
+    author: { date: "2026-08-02T09:00:00Z" },
+  };
+
+  assert.equal(evaluateGate(fixture).state, "success");
+});
+
+test("a server-stamped head-ref event after the review invalidates auto-fired settlement", () => {
+  const fixture = autoFiredSettledDispositionFixture();
+  fixture.timelineEvents.push({
+    event: "head_ref_force_pushed",
+    created_at: "2026-08-02T00:02:30Z",
+  });
+
+  assert.equal(evaluateGate(fixture).state, "failure");
+});
+
+test("an uncorrelated fresh request comment fails settlement closed", () => {
+  const fixture = autoFiredSettledDispositionFixture();
+  fixture.issueComments.unshift({
+    id: 40,
+    user: { login: "reviewer", type: "User" },
+    body: "@codex review",
+    created_at: "2026-08-02T00:02:30Z",
+  });
 
   assert.equal(evaluateGate(fixture).state, "failure");
 });
