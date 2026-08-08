@@ -54,9 +54,10 @@ round started:
 - **Explicitly requested round:** the latest review-request comment newer than
   the latest head update anchors the round.
 - **Auto-fired round:** when no review-request comment exists anywhere for the
-  PR (the initial review fires on open/ready), the latest head boundary itself
-  anchors the round. A request comment that exists but cannot be correlated to
-  the timeline yet still fails closed.
+  PR (the initial review fires on open/ready), a server-generated boundary —
+  the PR creation time and any head-ref event times, never client-controlled
+  commit timestamps — anchors the round. A request comment that exists but
+  cannot be correlated to the timeline yet still fails closed.
 
 After that anchor and a later non-dismissed formal bot review whose `commit_id`
 is the exact current head, an allowlisted human attests the reviewed pair with

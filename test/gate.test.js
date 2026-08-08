@@ -62,6 +62,7 @@ function settledDispositionFixture(overrides = {}) {
       number: 123,
       draft: false,
       state: "open",
+      created_at: "2026-08-02T00:00:30Z",
       head: { sha: fullHeadSha },
       base: { sha: fullBaseSha },
     },
@@ -517,9 +518,31 @@ test("auto-fired settlement requires the review to postdate the head boundary", 
   assert.equal(evaluateGate(fixture).state, "failure");
 });
 
-test("auto-fired settlement fails closed without a datable head boundary", () => {
+test("auto-fired settlement fails closed without any server boundary time", () => {
   const fixture = autoFiredSettledDispositionFixture();
+  delete fixture.pr.created_at;
   fixture.timelineEvents[0] = { event: "committed", sha: fullHeadSha };
+
+  assert.equal(evaluateGate(fixture).state, "failure");
+});
+
+test("a future-dated head commit cannot block auto-fired settlement", () => {
+  const fixture = autoFiredSettledDispositionFixture();
+  fixture.timelineEvents[0] = {
+    event: "committed",
+    sha: fullHeadSha,
+    author: { date: "2026-08-02T09:00:00Z" },
+  };
+
+  assert.equal(evaluateGate(fixture).state, "success");
+});
+
+test("a server-stamped head-ref event after the review invalidates auto-fired settlement", () => {
+  const fixture = autoFiredSettledDispositionFixture();
+  fixture.timelineEvents.push({
+    event: "head_ref_force_pushed",
+    created_at: "2026-08-02T00:02:30Z",
+  });
 
   assert.equal(evaluateGate(fixture).state, "failure");
 });

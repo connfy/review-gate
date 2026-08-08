@@ -98,6 +98,25 @@ function latestHeadBoundaryTime(timelineEvents, sha) {
   return boundaryTime;
 }
 
+// Server-generated head boundary for the requestless settlement anchor.
+// Git author/committer dates are client-controlled: a future-dated commit
+// would push a git-derived anchor past every real review and block
+// settlement forever. PR creation and head-ref events are stamped by GitHub.
+function latestServerHeadBoundaryTime(timelineEvents, prCreatedAt) {
+  let boundaryTime = parseTimestamp(prCreatedAt);
+  for (const event of timelineEvents) {
+    if (!HEAD_REF_EVENTS.has(String(event?.event ?? ""))) {
+      continue;
+    }
+    const eventTime = parseTimestamp(event?.created_at);
+    if (eventTime !== null) {
+      boundaryTime =
+        boundaryTime === null ? eventTime : Math.max(boundaryTime, eventTime);
+    }
+  }
+  return boundaryTime;
+}
+
 function issueCommentIdsAfterHead(timelineEvents, sha) {
   const boundaryIndex = latestHeadBoundaryIndex(timelineEvents, sha);
   const commentIds = new Set();
@@ -506,6 +525,7 @@ function reviewIsInProgress({
 function settledDisposition({
   sha,
   baseSha,
+  prCreatedAt,
   issueComments,
   issueEyesReactions,
   reviews,
@@ -545,9 +565,10 @@ function settledDisposition({
     return null;
   } else {
     // Auto-fired round: no review-request comment exists for this PR at all
-    // (the initial review fires on open/ready). The latest head boundary
-    // anchors the round in place of a request comment.
-    anchorTime = latestHeadBoundaryTime(timelineEvents, sha);
+    // (the initial review fires on open/ready). A server-generated boundary
+    // anchors the round in place of a request comment; commit_id binding on
+    // the qualifying review keeps an early anchor safe.
+    anchorTime = latestServerHeadBoundaryTime(timelineEvents, prCreatedAt);
   }
   if (anchorTime === null) {
     return null;
@@ -834,6 +855,7 @@ export function evaluateGate({
     disposition = settledDisposition({
       sha,
       baseSha,
+      prCreatedAt: pr?.created_at,
       issueComments,
       issueEyesReactions,
       reviews,
