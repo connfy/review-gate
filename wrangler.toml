@@ -26,13 +26,14 @@ CLEAN_REACTION_CONTENT = "+1"
 REVIEW_IN_PROGRESS_REACTION_CONTENT = "eyes"
 # Comment text that marks a new review request/staleness boundary.
 REVIEW_REQUEST_TEXT = "@codex review"
-# Comma-separated human GitHub logins allowed to record an exact head/base
-# settled disposition. The checked-in default stays empty (disabled) so a
-# downstream deployment never inherits another owner's authorization. The
-# deployment owner activates it as a deployment-scoped value, e.g.
+# SETTLED_DISPOSITION_LOGINS (comma-separated human GitHub logins allowed to
+# record an exact head/base settled disposition) is deliberately NOT declared
+# in [vars]: absence keeps the path disabled, no downstream deployment inherits
+# another owner's authorization, and a checked-in value — even an empty one —
+# would replace the deployment owner's remote secret of the same name on every
+# deploy. Activate it as a deployment-scoped value only, e.g.
 # `wrangler secret put SETTLED_DISPOSITION_LOGINS` (persists across deploys)
 # or `wrangler deploy --var SETTLED_DISPOSITION_LOGINS:<login>`.
-SETTLED_DISPOSITION_LOGINS = ""
 # Optional webhook-bound re-checks for pending review-start events. The durable
 # late-reaction path is the scheduled sweep, so this is disabled by default.
 REVIEW_PENDING_RETRY_INTERVAL_MS = "7000"
