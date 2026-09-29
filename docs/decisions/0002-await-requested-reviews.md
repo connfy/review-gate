@@ -37,8 +37,13 @@ PR edit triggered a re-evaluation.
 
 ## Trade-offs
 
-- This can only turn a `failure` into `pending`, never into `success`, so it
-  cannot admit a merge the old policy blocked.
+- The awaited state can only turn a `failure` into `pending`, never into
+  `success`, so it cannot admit a merge the old policy blocked.
+- Excluding the status board also tightens the settled-disposition rule. A
+  settlement posted while the bot's `eyes` is newer than every real response is
+  now refused as "review in progress". Previously the board comment falsely
+  ended the review and let it pass. This is the rule the settlement already
+  states.
 - A stalled review now reports `pending` for up to the window before it turns
   red. Twenty minutes covers normal reviews and matches the stall threshold the
   connfy PR loop uses.

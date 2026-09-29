@@ -665,6 +665,28 @@ test("review in progress blocks a settled disposition", () => {
   assert.equal(pending.description, REVIEW_IN_PROGRESS_DESCRIPTION);
 });
 
+test("a status board posted after eyes does not let a settlement pass mid-review", () => {
+  const fixture = settledDispositionFixture({
+    issueEyesReactions: [
+      {
+        user: { login: "chatgpt-codex-connector[bot]" },
+        content: "eyes",
+        created_at: "2026-08-02T00:04:30Z",
+      },
+    ],
+  });
+  fixture.issueComments.push({
+    id: 40,
+    user: { login: "chatgpt-codex-connector[bot]" },
+    body: `${DEFAULT_STATUS_BOARD_MARKER}\n\n## Codex Review Summary\n\nRunning`,
+    created_at: "2026-08-02T00:04:45Z",
+  });
+
+  const result = evaluateGate(fixture);
+  assert.equal(result.state, "pending");
+  assert.equal(result.description, REVIEW_IN_PROGRESS_DESCRIPTION);
+});
+
 test("settled disposition fails closed without a command comment URL", () => {
   const fixture = settledDispositionFixture();
   fixture.issueComments[1] = {
