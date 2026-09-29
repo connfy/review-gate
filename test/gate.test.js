@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  DEFAULT_STATUS_BOARD_MARKER,
   evaluateGate,
+  NO_CLEAN_REVIEW_DESCRIPTION,
   REVIEW_IN_PROGRESS_DESCRIPTION,
+  REVIEW_REQUESTED_DESCRIPTION,
 } from "../src/gate.js";
 
 function pr({ draft = false, state = "open" } = {}) {
@@ -662,6 +665,28 @@ test("review in progress blocks a settled disposition", () => {
   assert.equal(pending.description, REVIEW_IN_PROGRESS_DESCRIPTION);
 });
 
+test("a status board posted after eyes does not let a settlement pass mid-review", () => {
+  const fixture = settledDispositionFixture({
+    issueEyesReactions: [
+      {
+        user: { login: "chatgpt-codex-connector[bot]" },
+        content: "eyes",
+        created_at: "2026-08-02T00:04:30Z",
+      },
+    ],
+  });
+  fixture.issueComments.push({
+    id: 40,
+    user: { login: "chatgpt-codex-connector[bot]" },
+    body: `${DEFAULT_STATUS_BOARD_MARKER}\n\n## Codex Review Summary\n\nRunning`,
+    created_at: "2026-08-02T00:04:45Z",
+  });
+
+  const result = evaluateGate(fixture);
+  assert.equal(result.state, "pending");
+  assert.equal(result.description, REVIEW_IN_PROGRESS_DESCRIPTION);
+});
+
 test("settled disposition fails closed without a command comment URL", () => {
   const fixture = settledDispositionFixture();
   fixture.issueComments[1] = {
@@ -951,4 +976,159 @@ test("stale clean review before latest commit gets an explicit message", () => {
   });
   assert.equal(result.state, "failure");
   assert.match(result.description, /stale/i);
+});
+
+function readiedPrFixture(overrides = {}) {
+  return {
+    pr: { ...pr(), created_at: "2026-09-29T09:55:50Z" },
+    timelineEvents: [
+      {
+        event: "committed",
+        sha: "abc123",
+        committer: { date: "2026-09-29T09:55:40Z" },
+      },
+      { event: "ready_for_review", created_at: "2026-09-29T09:56:31Z" },
+    ],
+    now: Date.parse("2026-09-29T09:57:00Z"),
+    ...overrides,
+  };
+}
+
+const statusBoard = {
+  id: 7,
+  user: { login: "chatgpt-codex-connector[bot]" },
+  body: `${DEFAULT_STATUS_BOARD_MARKER}\n\n## Codex Review Summary\n\n| Review | Status |\n| --- | --- |\n| Code Review | Running |`,
+  created_at: "2026-09-29T09:56:41Z",
+};
+
+test("a ready transition awaits the automatic review instead of failing", () => {
+  const result = evaluateGate(readiedPrFixture());
+  assert.equal(result.state, "pending");
+  assert.equal(result.description, REVIEW_REQUESTED_DESCRIPTION);
+  assert.match(result.details[0], /marked ready at 2026-09-29T09:56:31Z/);
+});
+
+test("the review bot status board does not end an in-progress review", () => {
+  // Outside the request window, so only the in-progress path can apply.
+  const result = evaluateGate(
+    readiedPrFixture({
+      issueComments: [statusBoard],
+      issueEyesReactions: [
+        {
+          user: { login: "chatgpt-codex-connector[bot]" },
+          content: "eyes",
+          created_at: "2026-09-29T09:56:35Z",
+        },
+      ],
+      now: Date.parse("2026-09-29T11:00:00Z"),
+    }),
+  );
+  assert.equal(result.state, "pending");
+  assert.equal(result.description, REVIEW_IN_PROGRESS_DESCRIPTION);
+});
+
+test("the status board alone does not answer a requested review", () => {
+  const result = evaluateGate(readiedPrFixture({ issueComments: [statusBoard] }));
+  assert.equal(result.state, "pending");
+  assert.equal(result.description, REVIEW_REQUESTED_DESCRIPTION);
+});
+
+test("a clean reaction after the ready transition passes the gate", () => {
+  const result = evaluateGate(
+    readiedPrFixture({
+      issueComments: [statusBoard],
+      issueReactions: [
+        {
+          user: { login: "chatgpt-codex-connector[bot]" },
+          content: "+1",
+          created_at: "2026-09-29T09:58:00Z",
+        },
+      ],
+      now: Date.parse("2026-09-29T09:58:30Z"),
+    }),
+  );
+  assert.equal(result.state, "success");
+});
+
+test("an awaited review becomes a failure after the start window", () => {
+  const result = evaluateGate(
+    readiedPrFixture({ now: Date.parse("2026-09-29T10:16:32Z") }),
+  );
+  assert.equal(result.state, "failure");
+  assert.equal(result.description, NO_CLEAN_REVIEW_DESCRIPTION);
+});
+
+test("a review bot response after the request ends the wait", () => {
+  const result = evaluateGate(
+    readiedPrFixture({
+      issueComments: [
+        {
+          id: 8,
+          user: { login: "chatgpt-codex-connector[bot]" },
+          body: "Codex could not complete this review.",
+          created_at: "2026-09-29T09:56:50Z",
+        },
+      ],
+    }),
+  );
+  assert.equal(result.state, "failure");
+});
+
+test("a push after the ready transition is not an awaited review", () => {
+  const fixture = readiedPrFixture();
+  const result = evaluateGate({
+    ...fixture,
+    timelineEvents: [
+      { event: "ready_for_review", created_at: "2026-09-29T09:56:31Z" },
+      {
+        event: "committed",
+        sha: "abc123",
+        committer: { date: "2026-09-29T09:56:50Z" },
+      },
+    ],
+  });
+  assert.equal(result.state, "failure");
+});
+
+test("an explicit review request is awaited for the current head", () => {
+  const result = evaluateGate(
+    readiedPrFixture({
+      issueComments: [
+        {
+          id: 9,
+          user: { login: "connfy", type: "User" },
+          body: "@codex review",
+          created_at: "2026-09-29T10:05:00Z",
+        },
+      ],
+      now: Date.parse("2026-09-29T10:06:00Z"),
+    }),
+  );
+  assert.equal(result.state, "pending");
+  assert.match(result.details[0], /review requested at 2026-09-29T10:05:00/);
+});
+
+test("a draft is never awaited", () => {
+  const result = evaluateGate(
+    readiedPrFixture({ pr: { ...pr({ draft: true }), created_at: "2026-09-29T09:55:50Z" } }),
+  );
+  assert.equal(result.state, "failure");
+  assert.match(result.details[0], /draft/);
+});
+
+test("a status board showing the clean text is not a clean pass", () => {
+  const board = {
+    ...statusBoard,
+    body: `${statusBoard.body}\n\nCodex Review: Didn't find any major issues.`,
+  };
+  const result = evaluateGate(
+    readiedPrFixture({
+      issueComments: [board],
+      timelineEvents: [
+        ...readiedPrFixture().timelineEvents,
+        { event: "commented", ...board },
+      ],
+    }),
+  );
+  assert.notEqual(result.state, "success");
 });

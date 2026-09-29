@@ -73,6 +73,11 @@ function configFromEnv(env) {
     inProgressReactionContent: env.REVIEW_IN_PROGRESS_REACTION_CONTENT,
     reviewRequestText: env.REVIEW_REQUEST_TEXT,
     statusContext: env.STATUS_CONTEXT,
+    statusBoardMarker: env.REVIEW_STATUS_BOARD_MARKER,
+    reviewStartWindowMs:
+      env.REVIEW_START_WINDOW_MS == null || env.REVIEW_START_WINDOW_MS === ""
+        ? undefined
+        : Number(env.REVIEW_START_WINDOW_MS),
     botLogins,
     settledDispositionLogins: env.SETTLED_DISPOSITION_LOGINS
       ? env.SETTLED_DISPOSITION_LOGINS.split(",")

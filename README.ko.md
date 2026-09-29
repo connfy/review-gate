@@ -77,6 +77,14 @@ PR이 merge되어 base 브랜치가 바뀌면, 구독 중인 `pull_request` 종�
 
 `Review bot is reviewing the latest head.`
 
+최신 코드에 대한 리뷰를 요청해 둔 PR도 봇이 응답할 때까지 실패가 아니라 `pending`으로 둡니다.
+요청이란 PR 생성, 초안(draft)의 리뷰 준비 완료 전환, 리뷰 요청 코멘트를 말합니다.
+기다리는 시간은 `REVIEW_START_WINDOW_MS`(기본 20분)까지이고, 그 뒤에도 응답이 없으면
+실패로 표시합니다. Codex가 리뷰를 시작할 때 만들고 이후 계속 고쳐 쓰는 요약 코멘트는 봇의
+응답으로 보지 않습니다.
+
+`Review requested for the latest head; waiting for the review bot.`
+
 기본값으로는 아래 봇이 남긴 신호만 믿고,
 
 - `chatgpt-codex-connector`
@@ -223,6 +231,8 @@ GitHub가 아예 합치기 버튼을 못 누르게 막아주길 원한다면, �
 | `CLEAN_REACTION_CONTENT` | `+1` | 통과로 인정할 PR 본문 반응 |
 | `REVIEW_IN_PROGRESS_REACTION_CONTENT` | `eyes` | 최신 코드를 리뷰 중이라고 볼 반응 |
 | `REVIEW_REQUEST_TEXT` | `@codex review` | PR 본문 반응이 최신인지 판단할 때 쓰는 리뷰 요청 문구 |
+| `REVIEW_STATUS_BOARD_MARKER` | `<!-- codex-pull-request-review-summary -->` | 봇의 요약 코멘트 표시. 이 코멘트는 리뷰 응답으로 보지 않습니다 |
+| `REVIEW_START_WINDOW_MS` | `1200000` | 최신 코드에 요청된 리뷰를 봇 응답 없이 `pending`으로 기다리는 시간 |
 | `SETTLED_DISPOSITION_LOGINS` | 비어 있음(꺼짐) | exact head/base settled disposition을 증명할 수 있는 GitHub 사람 계정 목록(쉼표 구분) |
 | `REVIEW_START_RETRY_DELAY_MS` | `15000` | PR 생성/리뷰 요청 직후 늦게 붙는 `eyes`를 다시 확인하기 전 기다리는 시간 |
 | `REVIEW_PENDING_RETRY_INTERVAL_MS` | `7000` | 진행 중 리뷰에서 선택적 웹훅 내부 재확인 사이에 기다리는 시간 |

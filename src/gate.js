@@ -16,8 +16,19 @@ export const DEFAULT_BOT_LOGINS = Object.freeze([
 ]);
 export const DEFAULT_SETTLED_DISPOSITION_LOGINS = Object.freeze([]);
 export const DEFAULT_STATUS_CONTEXT = "review-gate/codex-clean";
+// Codex keeps one live summary comment per PR. It is created when the first
+// review starts and edited in place afterwards, so it never marks a finished
+// review.
+export const DEFAULT_STATUS_BOARD_MARKER =
+  "<!-- codex-pull-request-review-summary -->";
+// How long a requested review may show no reviewer signal before the gate
+// stops awaiting it. Reviews normally start within seconds and finish within
+// minutes; a longer silence is a stall that the author must act on.
+export const DEFAULT_REVIEW_START_WINDOW_MS = 20 * 60 * 1000;
 export const REVIEW_IN_PROGRESS_DESCRIPTION =
   "Review bot is reviewing the latest head.";
+export const REVIEW_REQUESTED_DESCRIPTION =
+  "Review requested for the latest head; waiting for the review bot.";
 export const NO_CLEAN_REVIEW_DESCRIPTION =
   "No clean review pass after the latest head update. Need a clean " +
   "review comment, matching review body, or fresh PR body reaction.";
@@ -44,6 +55,12 @@ export function resolveConfig(config = {}) {
               DEFAULT_SETTLED_DISPOSITION_LOGINS,
           ),
     statusContext: config.statusContext ?? DEFAULT_STATUS_CONTEXT,
+    statusBoardMarker: config.statusBoardMarker ?? DEFAULT_STATUS_BOARD_MARKER,
+    reviewStartWindowMs:
+      Number.isFinite(config.reviewStartWindowMs) &&
+      config.reviewStartWindowMs >= 0
+        ? config.reviewStartWindowMs
+        : DEFAULT_REVIEW_START_WINDOW_MS,
   };
 }
 
@@ -156,6 +173,16 @@ export function isSettledDispositionAuthor(comment, config) {
   return (
     String(comment?.user?.type ?? "") === "User" &&
     settledDispositionLogins.has(loginFor(comment?.user))
+  );
+}
+
+// The bot's live status board is neither a review response nor a clean pass,
+// whatever text it currently shows.
+function isStatusBoard(body, config) {
+  const { statusBoardMarker } = resolveConfig(config);
+  return (
+    Boolean(statusBoardMarker) &&
+    String(body ?? "").includes(statusBoardMarker)
   );
 }
 
@@ -309,7 +336,11 @@ function issueCommentQualifies(comment, sha, timelineEvents, config) {
   const { cleanText, botLogins } = resolveConfig(config);
   const author = loginFor(comment?.user);
   const body = String(comment?.body ?? "");
-  if (!botLogins.has(author) || !body.includes(cleanText)) {
+  if (
+    !botLogins.has(author) ||
+    !body.includes(cleanText) ||
+    isStatusBoard(body, config)
+  ) {
     return false;
   }
 
@@ -460,6 +491,9 @@ function latestReviewBotResponseTime({
       continue;
     }
     const body = String(comment?.body ?? "");
+    if (isStatusBoard(body, config)) {
+      continue;
+    }
     const reviewedPrefix = extractReviewedCommitPrefix(body);
     const commentTime = parseTimestamp(comment?.created_at);
     if (
@@ -652,7 +686,11 @@ function cleanCommentsFromTimeline(timelineEvents, sha, config) {
     }
     const author = loginFor(event?.user ?? event?.actor);
     const body = String(event?.body ?? "");
-    if (!botLogins.has(author) || !body.includes(cleanText)) {
+    if (
+      !botLogins.has(author) ||
+      !body.includes(cleanText) ||
+      isStatusBoard(body, config)
+    ) {
       continue;
     }
     const reviewedPrefix = extractReviewedCommitPrefix(body);
@@ -806,6 +844,80 @@ export function codexCleanEvents({
   return cleanEvents;
 }
 
+// A review that was requested for the current head, by opening the PR, marking
+// it ready, or an explicit request comment, and that has produced no review bot
+// response since. Only server-generated timestamps anchor the request. The
+// result can only turn a failure into pending, never into success.
+function awaitedReviewRequest({
+  pr,
+  sha,
+  issueComments,
+  reviews,
+  timelineEvents,
+  now,
+  config,
+}) {
+  const { reviewStartWindowMs } = resolveConfig(config);
+  const headBoundaryTime = latestHeadBoundaryTime(timelineEvents, sha);
+  if (headBoundaryTime === null) {
+    return null;
+  }
+
+  const starts = [];
+  const openedAt = parseTimestamp(pr?.created_at);
+  if (openedAt !== null) {
+    starts.push({ timestamp: openedAt, detail: `PR opened at ${pr.created_at}` });
+  }
+  for (const event of timelineEvents) {
+    if (event?.event !== "ready_for_review") {
+      continue;
+    }
+    const readyAt = parseTimestamp(event?.created_at);
+    if (readyAt !== null) {
+      starts.push({
+        timestamp: readyAt,
+        detail: `PR marked ready at ${event.created_at}`,
+      });
+    }
+  }
+  const requestedAt = latestReviewRequestTime(
+    issueComments,
+    timelineEvents,
+    config,
+  );
+  if (requestedAt !== null) {
+    starts.push({
+      timestamp: requestedAt,
+      detail: `review requested at ${new Date(requestedAt).toISOString()}`,
+    });
+  }
+
+  const latestStart = starts.reduce(
+    (latest, start) =>
+      latest === null || start.timestamp > latest.timestamp ? start : latest,
+    null,
+  );
+  if (
+    latestStart === null ||
+    latestStart.timestamp < headBoundaryTime ||
+    now - latestStart.timestamp > reviewStartWindowMs
+  ) {
+    return null;
+  }
+
+  const latestResponseTime = latestReviewBotResponseTime({
+    sha,
+    issueComments,
+    reviews,
+    timelineEvents,
+    config,
+  });
+  if (latestResponseTime !== null && latestResponseTime >= latestStart.timestamp) {
+    return null;
+  }
+  return latestStart;
+}
+
 export function evaluateGate({
   pr,
   issueComments = [],
@@ -816,6 +928,7 @@ export function evaluateGate({
   reviewRequestReactions = [],
   timelineEvents = [],
   config,
+  now = Date.now(),
 }) {
   const resolved = resolveConfig(config);
   const prNumber = Number(pr.number);
@@ -908,6 +1021,35 @@ export function evaluateGate({
         state: "pending",
         description: REVIEW_IN_PROGRESS_DESCRIPTION,
         details: inProgressEvents.map((event) => event.detail),
+      };
+    }
+
+    // A requested review often shows no in-progress signal for a while, and
+    // GitHub sends no webhook when the bot later reacts. Reporting pending
+    // keeps the PR in the priority queue so the reaction is seen by the next
+    // scheduled sweep instead of the slow repository rotation.
+    const awaitedRequest =
+      details.length === 0
+        ? awaitedReviewRequest({
+            pr,
+            sha,
+            issueComments,
+            reviews,
+            timelineEvents,
+            now,
+            config: resolved,
+          })
+        : null;
+    if (awaitedRequest !== null) {
+      return {
+        prNumber,
+        sha,
+        baseSha,
+        prState,
+        generation,
+        state: "pending",
+        description: REVIEW_REQUESTED_DESCRIPTION,
+        details: [awaitedRequest.detail],
       };
     }
 
