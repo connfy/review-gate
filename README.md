@@ -85,6 +85,15 @@ comment. The status description is deliberately generic:
 
 `Review bot is reviewing the latest head.`
 
+A review that was requested for the latest head is also `pending`, not
+`failure`, until the bot responds. The request can be opening the PR, marking a
+draft ready, or a review-request comment. The wait lasts at most
+`REVIEW_START_WINDOW_MS`, 20 minutes by default, and then the status becomes a
+failure. The bot's live summary comment, which Codex creates when a review
+starts and edits in place, never counts as the bot's response:
+
+`Review requested for the latest head; waiting for the review bot.`
+
 By default Review Gate trusts these bots,
 
 - `chatgpt-codex-connector`
@@ -238,6 +247,8 @@ different reviewer bot or change the trigger text.
 | `CLEAN_REACTION_CONTENT` | `+1` | PR body reaction that marks a clean review pass. |
 | `REVIEW_IN_PROGRESS_REACTION_CONTENT` | `eyes` | Reaction that marks the latest head as currently under review. |
 | `REVIEW_REQUEST_TEXT` | `@codex review` | Comment text that marks the latest review request boundary for reaction freshness. |
+| `REVIEW_STATUS_BOARD_MARKER` | `<!-- codex-pull-request-review-summary -->` | Marker of the bot's live summary comment, which is never treated as a review response. |
+| `REVIEW_START_WINDOW_MS` | `1200000` | How long a review requested for the latest head stays `pending` without a bot response. |
 | `SETTLED_DISPOSITION_LOGINS` | empty (disabled) | Human GitHub logins allowed to attest exact head/base settled dispositions (comma-separated). |
 | `REVIEW_START_RETRY_DELAY_MS` | `15000` | Delay before re-checking a PR-open/review-request event for late `eyes`. |
 | `REVIEW_PENDING_RETRY_INTERVAL_MS` | `7000` | Delay between optional webhook-bound re-checks while the latest review is pending. |
