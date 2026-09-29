@@ -1115,3 +1115,20 @@ test("a draft is never awaited", () => {
   assert.equal(result.state, "failure");
   assert.match(result.details[0], /draft/);
 });
+
+test("a status board showing the clean text is not a clean pass", () => {
+  const board = {
+    ...statusBoard,
+    body: `${statusBoard.body}\n\nCodex Review: Didn't find any major issues.`,
+  };
+  const result = evaluateGate(
+    readiedPrFixture({
+      issueComments: [board],
+      timelineEvents: [
+        ...readiedPrFixture().timelineEvents,
+        { event: "commented", ...board },
+      ],
+    }),
+  );
+  assert.notEqual(result.state, "success");
+});

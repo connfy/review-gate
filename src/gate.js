@@ -176,6 +176,16 @@ export function isSettledDispositionAuthor(comment, config) {
   );
 }
 
+// The bot's live status board is neither a review response nor a clean pass,
+// whatever text it currently shows.
+function isStatusBoard(body, config) {
+  const { statusBoardMarker } = resolveConfig(config);
+  return (
+    Boolean(statusBoardMarker) &&
+    String(body ?? "").includes(statusBoardMarker)
+  );
+}
+
 export function extractReviewedCommitPrefix(body) {
   const match = String(body ?? "").match(
     /\*\*Reviewed commit:\*\*\s*`([0-9a-f]+)`/i,
@@ -326,7 +336,11 @@ function issueCommentQualifies(comment, sha, timelineEvents, config) {
   const { cleanText, botLogins } = resolveConfig(config);
   const author = loginFor(comment?.user);
   const body = String(comment?.body ?? "");
-  if (!botLogins.has(author) || !body.includes(cleanText)) {
+  if (
+    !botLogins.has(author) ||
+    !body.includes(cleanText) ||
+    isStatusBoard(body, config)
+  ) {
     return false;
   }
 
@@ -462,7 +476,7 @@ function latestReviewBotResponseTime({
   timelineEvents,
   config,
 }) {
-  const { botLogins, statusBoardMarker } = resolveConfig(config);
+  const { botLogins } = resolveConfig(config);
   const headBoundaryTime = latestHeadBoundaryTime(timelineEvents, sha);
   let latest = null;
   const updateLatest = (timestamp) => {
@@ -477,7 +491,7 @@ function latestReviewBotResponseTime({
       continue;
     }
     const body = String(comment?.body ?? "");
-    if (statusBoardMarker && body.includes(statusBoardMarker)) {
+    if (isStatusBoard(body, config)) {
       continue;
     }
     const reviewedPrefix = extractReviewedCommitPrefix(body);
@@ -672,7 +686,11 @@ function cleanCommentsFromTimeline(timelineEvents, sha, config) {
     }
     const author = loginFor(event?.user ?? event?.actor);
     const body = String(event?.body ?? "");
-    if (!botLogins.has(author) || !body.includes(cleanText)) {
+    if (
+      !botLogins.has(author) ||
+      !body.includes(cleanText) ||
+      isStatusBoard(body, config)
+    ) {
       continue;
     }
     const reviewedPrefix = extractReviewedCommitPrefix(body);
