@@ -9,6 +9,11 @@ const TOKEN_REFRESH_SKEW_MS = 60_000;
 let privateKeyCache = null;
 const installationTokenCache = new Map();
 
+// GitHub treats commit status contexts as case-insensitive identities.
+export function normalizeStatusContext(context) {
+  return String(context ?? "").toLowerCase();
+}
+
 function base64UrlEncode(bytes) {
   let binary = "";
   for (const byte of bytes) {
@@ -475,6 +480,9 @@ export class RepoClient {
     if (requireComplete && statuses.length > 1000) {
       throw new Error("commit status history exceeds the 1,000-status inspection cap");
     }
-    return statuses.filter((status) => status?.context === this.statusContext);
+    const context = normalizeStatusContext(this.statusContext);
+    return statuses.filter(
+      (status) => normalizeStatusContext(status?.context) === context,
+    );
   }
 }

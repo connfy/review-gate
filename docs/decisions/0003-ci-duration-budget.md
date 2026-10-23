@@ -60,9 +60,21 @@ report promptly; they do not immediately overwrite the same KV key with a
 deadline, respecting KV's one-write-per-second-per-key constraint. Completion
 cleanup re-fetches live attempt state, and attempts have distinct keys so an
 old completion cannot remove a newer rerun. Listing is capped at ten 1,000-key
-pages; caps and errors are visible in sweep summaries. Jobs are capped at 1,000
-per attempt and status history at 1,000 per SHA; incomplete inspection fails
+pages per sweep. Persist the opaque continuation cursor in a separate KV key
+after processing a segment; resume it on the next sweep and clear it at the end
+to wrap. This bounds enumeration without starving later installations behind
+10,000 not-yet-due entries. Due records are sorted within each segment, not
+globally. KV eventual consistency may repeat a segment; the cursor is not a
+lock. Caps and errors are visible in sweep summaries, and `queued` counts only
+the scanned segment. Jobs are capped at 1,000 per attempt and status history at
+1,000 per SHA; incomplete inspection fails
 visibly rather than guessing that cancellation or success is safe.
+
+GitHub identifies commit status contexts case-insensitively. Configuration must
+reject a collision with the effective review context, disabling budgeting with
+a clear log, so proactive budget success can never overwrite the review gate.
+Use the same normalization when filtering status history, preserving findings
+and review evidence regardless of the casing originally published.
 
 The separate, configurable `review-gate/ci-budget` status is proactively green
 while no breach is known. This lets normal runs satisfy a required context,
@@ -114,4 +126,6 @@ cleanup or expiry; a failed request is not marked accepted.
 - [GitHub workflow jobs and attempt timing](https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run-attempt)
 - [GitHub ordinary workflow cancellation and required permission](https://docs.github.com/en/rest/actions/workflow-runs#cancel-a-workflow-run)
 - [GitHub installation access tokens and granted permissions](https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app)
+- [GitHub commit status context identity](https://docs.github.com/en/rest/commits/statuses#create-a-commit-status)
+- [Workers KV cursor pagination](https://developers.cloudflare.com/kv/api/list-keys/#pagination)
 - [Workers KV write limits](https://developers.cloudflare.com/kv/platform/limits/)

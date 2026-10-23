@@ -169,13 +169,63 @@ test("unknown or invalid configuration disables enforcement instead of guessing"
     { SWEEP_MAX_CI_RUNS: "2.5" },
     { CI_BUDGET_STATUS_CONTEXT: "" },
     { CI_BUDGET_STATUS_CONTEXT: "review-gate/codex-clean" },
+    { CI_BUDGET_STATUS_CONTEXT: "REVIEW-GATE/CODEX-CLEAN" },
     { STATUS_CONTEXT: "custom", CI_BUDGET_STATUS_CONTEXT: "custom" },
+    {
+      STATUS_CONTEXT: "Custom/Review",
+      CI_BUDGET_STATUS_CONTEXT: "CUSTOM/review",
+    },
+    { STATUS_CONTEXT: "REVIEW-GATE/CI-BUDGET" },
   ]) {
     assert.equal(
       resolveCiBudgetConfig({ CI_BUDGET_MINUTES: "10", ...overrides }).enabled,
       false,
     );
   }
+});
+
+test("a case-variant review context cannot publish budget success over a failed review gate", async (context) => {
+  const f = fixture({ mode: "cancel" });
+  f.env.CI_BUDGET_STATUS_CONTEXT = "REVIEW-GATE/CODEX-CLEAN";
+  const reviewFailure = {
+    context: "review-gate/codex-clean",
+    state: "failure",
+    description: "Review required",
+  };
+  const history = [reviewFailure];
+  const requests = [];
+  const logs = [];
+  context.mock.method(console, "error", (...args) => logs.push(args.join(" ")));
+  // Exercise the webhook handler and real RepoClient against a GitHub-shaped
+  // history. Before the configuration guard this writes a proactive success.
+  context.mock.method(globalThis, "fetch", async (url, options) => {
+    const path = new URL(url).pathname;
+    requests.push({ path, method: options.method });
+    if (options.method === "POST") {
+      const status = JSON.parse(options.body);
+      history.unshift(status);
+      return Response.json(status, { status: 201 });
+    }
+    if (path.endsWith("/statuses")) return Response.json(history);
+    if (path.endsWith("/jobs")) {
+      return Response.json({
+        total_count: 1,
+        jobs: [{ status: "in_progress", started_at: iso(0) }],
+      });
+    }
+    return Response.json(f.live);
+  });
+  const options = {
+    now: start + 1,
+    getInstallationAccess: f.options.getInstallationAccess,
+  };
+  await handleCiBudgetEvent(f.env, "workflow_run", payload(), options);
+  const summary = await sweepCiBudgetRuns(f.env, options);
+  assert.deepEqual(history, [reviewFailure]);
+  assert.deepEqual(requests, []);
+  assert.equal(f.env.PENDING_REVIEWS.records.size, 0);
+  assert.equal(summary.enabled, false);
+  assert.match(logs.join(" "), /CI budget disabled:.*case-insensitive/);
 });
 
 test("only supported workflow-run actions with complete coordinates enter the queue", () => {
@@ -506,6 +556,57 @@ test("CI queue pagination reaches due runs on later pages and caps even empty cu
   const summary = await sweepCiBudgetRuns(f.env, f.options);
   assert.equal(pages, 10);
   assert.equal(summary.limited, true);
+});
+
+test("bounded CI queue enumeration resumes past 10,000 not-yet-due runs and wraps", async (context) => {
+  context.mock.method(console, "warn", () => {});
+  const f = fixture();
+  f.env.SWEEP_MAX_CI_RUNS = "1";
+  const queue = f.env.PENDING_REVIEWS;
+  const runKey = (installationId) =>
+    `ci-budget-run:v1:${installationId}:example-org:example-repo:10:1`;
+  // Earlier installations need no evaluation yet, but must not hide an overdue
+  // run beyond the per-sweep enumeration bound.
+  for (
+    let installationId = 10_000;
+    installationId < 20_000;
+    installationId += 1
+  ) {
+    await queue.put(runKey(installationId), "queued", {
+      metadata: {
+        ...ref,
+        installationId,
+        budgetMs: 600_000,
+        nextCheckAt: start + 3_600_000,
+      },
+    });
+  }
+  await queue.put(runKey(ref.installationId), "queued", {
+    metadata: { ...ref, budgetMs: 600_000, nextCheckAt: 0 },
+  });
+  const cursors = [];
+  const list = queue.list.bind(queue);
+  queue.list = async (options) => {
+    cursors.push(options.cursor);
+    return list(options);
+  };
+  const first = await sweepCiBudgetRuns(f.env, f.options);
+  assert.equal(first.queued, 10_000);
+  assert.equal(first.runs, 0);
+  assert.equal(first.limited, true);
+  assert.equal(cursors.length, 10);
+  const second = await sweepCiBudgetRuns(f.env, f.options);
+  assert.equal(second.queued, 1);
+  assert.equal(second.runs, 1);
+  assert.equal(second.errors, 0);
+  assert.equal(cursors[10], "10000");
+  assert.equal(f.calls.writes[0].state, "failure");
+  // Completion of enumeration wraps; an earlier entry becoming due is served.
+  queue.records.get(runKey(10_000)).metadata.nextCheckAt = 0;
+  const third = await sweepCiBudgetRuns(f.env, f.options);
+  assert.equal(cursors[11], undefined);
+  assert.equal(third.runs, 1);
+  assert.equal(third.errors, 0);
 });
 
 test("cancellation completion ignores never-started cancelled jobs and settles the queue", async () => {

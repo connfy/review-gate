@@ -290,8 +290,12 @@ This is a duration limit, not a calculation of billed, rounded runner minutes.
 
 Signed workflow webhooks enqueue attempts in the existing `PENDING_REVIEWS` KV
 namespace. The scheduled sweep checks due attempts before the review sweeps,
-using its own `SWEEP_MAX_CI_RUNS` cap (default `2`). Once the first sweep discovers
-the execution start, it schedules the next API check for the deadline. Completed
+using its own `SWEEP_MAX_CI_RUNS` cap (default `2`). Each sweep scans at most ten
+1,000-key pages and persists the continuation cursor for the next sweep, wrapping
+at the end. Later installations therefore remain reachable even when earlier
+queue entries are not due yet. Due attempts are ordered by deadline within the
+scanned segment. Once the first sweep discovers the execution start, it schedules
+the next API check for the deadline. Completed
 webhooks report promptly; scheduled live reads settle queue entries. Verified
 active records renew their retention of budget duration plus 24 hours. Failed
 reads preserve the previous expiry, so removed installations cannot accumulate
@@ -329,7 +333,7 @@ different reviewer bot or change the trigger text.
 | `STATUS_CONTEXT` | `review-gate/codex-clean` | The commit status name to write. |
 | `CI_BUDGET_MINUTES` | absent (disabled) | Positive decimal minutes, at whole-millisecond precision. One limit for all installed repositories. |
 | `CI_BUDGET_MODE` | `report` | `report` writes status only; `cancel` also requests cancellation after a breach if Actions write is approved. Other values disable budgeting. |
-| `CI_BUDGET_STATUS_CONTEXT` | `review-gate/ci-budget` | Separate budget status context; must be nonempty and different from `STATUS_CONTEXT`. |
+| `CI_BUDGET_STATUS_CONTEXT` | `review-gate/ci-budget` | Separate budget status context; must be nonempty and different from the effective `STATUS_CONTEXT`, ignoring case. A collision disables budgeting and logs an error. |
 | `SWEEP_MAX_CI_RUNS` | `2` | Positive integer cap on due workflow attempts evaluated per sweep, separate from both review budgets. |
 | `REVIEW_BOT_LOGINS` | `chatgpt-codex-connector,chatgpt-codex-connector[bot]` | Bot logins whose clean pass counts (comma-separated). |
 | `CLEAN_REVIEW_TEXT` | `Codex Review: Didn't find any major issues.` | Text that marks a clean review pass. |
@@ -369,9 +373,11 @@ month, still below the Workers Paid included allowance. Queue records are stored
 in KV metadata, so the sweep does not need a separate KV read per PR.
 
 Enabled CI budgeting adds a separate KV list traversal (up to ten 1,000-key
-pages per sweep), plus run/job/status reads only for due attempts within its
-cap. Job inspection is capped at 1,000 jobs per attempt and status inspection at
-1,000 statuses per SHA. Incomplete or oversized histories log an error and stay
+pages per sweep), one cursor read, and a cursor write or deletion when advancing
+or wrapping a partial traversal. The `queued` count covers the scanned segment,
+not the entire queue. Run/job/status reads only cover due attempts within the
+evaluation cap. Job inspection is capped at 1,000 jobs per attempt and status
+inspection at 1,000 statuses per SHA. Incomplete or oversized histories log an error and stay
 retryable rather than silently passing or cancelling from partial evidence.
 
 ## Architecture and decisions

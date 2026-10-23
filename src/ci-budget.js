@@ -1,10 +1,16 @@
 // Deployment-wide Actions duration policy. GitHub owns run state and timing;
 // KV only schedules bounded retries and remembers accepted cancel requests.
-import { getCachedInstallationAccess, RepoClient } from "./github.js";
+import { DEFAULT_STATUS_CONTEXT } from "./gate.js";
+import {
+  getCachedInstallationAccess,
+  normalizeStatusContext,
+  RepoClient,
+} from "./github.js";
 
 export const CI_BUDGET_STATUS_CONTEXT = "review-gate/ci-budget";
 const RUN_PREFIX = "ci-budget-run:v1:";
 const CANCEL_PREFIX = "ci-budget-cancel:v1:";
+const SWEEP_CURSOR_KEY = "ci-budget-sweep-cursor:v1";
 const SWEEP_INTERVAL_MS = 3 * 60 * 1000;
 const MAX_QUEUE_KEYS = 10_000;
 // Match the existing pending queue's 24-hour recovery horizon. Successful live
@@ -31,9 +37,11 @@ export function resolveCiBudgetConfig(env = {}) {
     error = "CI_BUDGET_MODE must be report or cancel";
   } else if (
     !statusContext ||
-    statusContext === (env.STATUS_CONTEXT ?? "review-gate/codex-clean")
+    normalizeStatusContext(statusContext) ===
+      normalizeStatusContext(env.STATUS_CONTEXT ?? DEFAULT_STATUS_CONTEXT)
   ) {
-    error = "CI_BUDGET_STATUS_CONTEXT must be a separate nonempty context";
+    error =
+      "CI_BUDGET_STATUS_CONTEXT must be nonempty and different from STATUS_CONTEXT (case-insensitive)";
   } else if (!Number.isSafeInteger(maxRuns) || maxRuns <= 0) {
     error = "SWEEP_MAX_CI_RUNS must be a positive safe integer";
   } else if (
@@ -402,7 +410,8 @@ export async function sweepCiBudgetRuns(env, options = {}) {
   try {
     const namespace = requireQueue(env);
     const keys = [];
-    let cursor;
+    const previousCursor = await namespace.get(SWEEP_CURSOR_KEY);
+    let cursor = previousCursor;
     let pages = 0;
     do {
       const page = await namespace.list({
@@ -462,6 +471,14 @@ export async function sweepCiBudgetRuns(env, options = {}) {
           });
         }
       }
+    }
+    // Keep enumeration bounded without permanently hiding later installations.
+    // Resume the next segment even when this segment had no due records; wrap
+    // after completion so earlier records and newly inserted keys are revisited.
+    if (cursor) {
+      await namespace.put(SWEEP_CURSOR_KEY, cursor);
+    } else if (previousCursor) {
+      await namespace.delete(SWEEP_CURSOR_KEY);
     }
   } catch (error) {
     summary.errors += 1;

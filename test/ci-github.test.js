@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { reportCiBudgetStatus } from "../src/ci-budget.js";
 import {
   getCachedInstallationAccess,
   getCachedInstallationToken,
@@ -119,7 +120,7 @@ test("CI status history is context-specific and fails visibly when its completen
   const history = [
     { context: "another-check", state: "failure" },
     { context: "review-gate/ci-budget", state: "success" },
-    { context: "review-gate/ci-budget", state: "failure" },
+    { context: "REVIEW-GATE/CI-BUDGET", state: "failure" },
   ];
   context.mock.method(globalThis, "fetch", async () => Response.json(history));
   assert.deepEqual(
@@ -141,6 +142,44 @@ test("CI status history is context-specific and fails visibly when its completen
   await assert.rejects(
     client().statusesForContext("a".repeat(40), { requireComplete: true }),
     /1,000-status inspection cap/,
+  );
+});
+
+test("status history uses case-insensitive identity for review reads and sticky budget failures", async (context) => {
+  const history = [
+    { context: "review-gate/codex-clean", state: "failure" },
+    {
+      context: "REVIEW-GATE/CI-BUDGET",
+      state: "failure",
+      description: "Budget exceeded",
+      target_url: "https://example.com/run",
+    },
+  ];
+  context.mock.method(globalThis, "fetch", async (_url, options) => {
+    assert.equal(
+      options.method,
+      "GET",
+      "existing failure must not be overwritten",
+    );
+    return Response.json(history);
+  });
+  const reviewClient = new RepoClient(
+    "test-installation-token",
+    "example-org",
+    "example-repo",
+    "REVIEW-GATE/CODEX-CLEAN",
+  );
+  assert.deepEqual(
+    await reviewClient.latestStatusForContext("a".repeat(40)),
+    history[0],
+  );
+  assert.equal(
+    await reportCiBudgetStatus(client(), "a".repeat(40), {
+      state: "success",
+      description: "Within budget",
+      targetUrl: "https://example.com/run",
+    }),
+    false,
   );
 });
 

@@ -37,13 +37,18 @@ When CI budgeting is enabled, signed `workflow_run` webhooks instead enqueue and
 evaluate the referenced workflow attempt. GitHub attempt/job reads determine
 wall time from the first executed job to completion (or now), excluding the
 initial queue. The scheduled handler processes due CI attempts before both PR
-paths, with a third independent cap. Initial webhook writes are not immediately
+paths, with a third independent cap. Bounded queue enumeration resumes from a
+persisted KV cursor across sweeps and wraps when listing completes, so later
+installations are not hidden behind an always-full first segment. Due attempts
+are sorted within that segment. Initial webhook writes are not immediately
 overwritten; only scheduled evaluations reschedule deadlines and clean terminal
 records. Permission/API failures remain queued. Budget configuration changes
 invalidate old deadlines. No CI queue listing or Actions request occurs when
 the budget is absent.
 
 The budget status is separate from review status and actual workflow results.
+Configuration rejects a case-insensitive collision with the effective review
+context, and all status-history reads use the same case-insensitive identity.
 It is green proactively until a breach is observed; a reported failure is sticky
 on the SHA across workflows and reruns. Status history and a post-success
 reconciliation prevent an observed finding from being cleared by a shorter run.
