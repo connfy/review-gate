@@ -1,6 +1,6 @@
 # ADR 0003: One deployment-wide CI duration budget
 
-- Status: Accepted
+- Status: Accepted; amended by [ADR 0004](0004-status-feedback-loop.md)
 - Date: 2026-10-23
 
 ## Purpose
@@ -41,10 +41,13 @@ are part of pipeline wall time; parallel durations are not summed. Job timestamp
 without using the run's mutable `updated_at`. A duration exactly equal to the
 budget is allowed; exceeding it is the finding. This is not an invoice estimator.
 
-Subscribe to `workflow_run` (`requested`, `in_progress`, `completed`). Enqueue
-the installation/repository/run/attempt in a separate key prefix in the existing
+Subscribe to `workflow_run`. An `in_progress` delivery enqueues the
+installation/repository/run/attempt in a separate key prefix in the existing
 `PENDING_REVIEWS` namespace before API evaluation so failures remain retryable.
-GitHub is authoritative; every evaluation reads the exact attempt and its jobs.
+`requested` and `completed` deliveries follow ADR 0004.
+GitHub is authoritative; every evaluation reads the exact attempt (a completed
+delivery uses its signed final record instead) and, unless the attempt
+concluded `skipped`, its jobs.
 The sweep evaluates due records before PR work, with its own positive integer
 cap (default two). Once the start is known, the next check is due at the budget
 deadline; unknown starts and failed evaluations retry on the existing cadence.
@@ -55,11 +58,12 @@ horizon without expiring before the configured deadline. Failed reads back off
 but preserve the prior expiry, bounding removed installations and inaccessible
 runs instead of renewing them forever. Cancel receipts use the same window.
 
-Only scheduled reads settle/reschedule queue keys. Webhooks enqueue once and
-report promptly; they do not immediately overwrite the same KV key with a
-deadline, respecting KV's one-write-per-second-per-key constraint. Completion
-cleanup re-fetches live attempt state, and attempts have distinct keys so an
-old completion cannot remove a newer rerun. Listing is capped at ten 1,000-key
+Only scheduled reads reschedule queue keys. Webhooks enqueue once and report
+promptly; they do not immediately overwrite the same KV key with a deadline,
+respecting KV's one-write-per-second-per-key constraint. A delivery that sees
+its attempt finished settles it (ADR 0004); scheduled cleanup re-fetches live
+attempt state. Attempts have distinct keys so an old completion cannot remove a
+newer rerun. Listing is capped at ten 1,000-key
 pages per sweep. Persist the opaque continuation cursor in a separate KV key
 after processing a segment; resume it on the next sweep and clear it at the end
 to wrap. This bounds enumeration without starving later installations behind
@@ -77,13 +81,15 @@ Use the same normalization when filtering status history, preserving findings
 and review evidence regardless of the casing originally published.
 
 The separate, configurable `review-gate/ci-budget` status is proactively green
-while no breach is known. This lets normal runs satisfy a required context,
+while no breach is known, once a job has executed (ADR 0004). This lets normal
+runs satisfy a required context,
 without pretending the budget check replaces actual CI checks. Once reported,
 a breach is sticky on the SHA: another workflow, rerun, or setting change does
 not erase it. The description directs optimization, not a longer timeout, and
 links to the offending attempt. The status history retains findings; a success
 writer checks again afterward to reconcile an overlapping failure publication.
-No Actions run means no budget status, and enabling does not backfill old runs.
+No executed Actions job means no budget status, and enabling does not backfill
+old runs. A status is written only when its state or description changes.
 
 Actions read is required, and Actions write must be explicitly present on the
 installation token before cancellation. Commit statuses write must also be
@@ -113,8 +119,10 @@ cleanup or expiry; a failed request is not marked accepted.
 - Proactive green describes only absence of an observed duration finding. Require
   actual CI checks as well, and do not require this status on branches without
   Actions runs. Persisted failures require a new SHA with optimized CI.
-- Without a delivered workflow event there is no queued record. Lost deliveries
-  need GitHub redelivery; the open-PR review fallback does not discover Actions.
+- Without a delivered `in_progress` event an active attempt is not queued, so
+  it cannot be cancelled; its completed delivery is still reported. Lost
+  deliveries need GitHub redelivery; the open-PR review fallback does not
+  discover Actions.
   An outage longer than the retention window likewise needs event redelivery.
 - Disabled deployments do not list the CI queue, request Actions APIs, or gain
   cancellation authority. Existing review caps, cron, and configuration stay

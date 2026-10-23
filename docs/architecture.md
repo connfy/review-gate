@@ -33,25 +33,36 @@ Workers KV namespace.
 5. Every three minutes, the scheduled handler evaluates queued pending heads
    and the rotating open-PR fallback with separate budgets.
 
-When CI budgeting is enabled, signed `workflow_run` webhooks instead enqueue and
-evaluate the referenced workflow attempt. GitHub attempt/job reads determine
+When CI budgeting is enabled, signed `workflow_run` webhooks are routed to the
+budget instead. `requested` does no work, since no job has started. `in_progress`
+enqueues and evaluates the referenced workflow attempt. `completed` evaluates
+the finished attempt from its signed payload (a `skipped` conclusion needs no
+API call); only a failed evaluation is queued. Whichever delivery sees the
+attempt finished removes its queue entry.
+GitHub attempt/job reads determine
 wall time from the first executed job to completion (or now), excluding the
 initial queue. The scheduled handler processes due CI attempts before both PR
 paths, with a third independent cap. Bounded queue enumeration resumes from a
 persisted KV cursor across sweeps and wraps when listing completes, so later
 installations are not hidden behind an always-full first segment. Due attempts
 are sorted within that segment. Initial webhook writes are not immediately
-overwritten; only scheduled evaluations reschedule deadlines and clean terminal
-records. Permission/API failures remain queued. Budget configuration changes
+overwritten; only scheduled evaluations reschedule deadlines, and they clean
+terminal records that no completed webhook settled. Permission/API failures
+remain queued. Budget configuration changes
 invalidate old deadlines. No CI queue listing or Actions request occurs when
 the budget is absent.
 
 The budget status is separate from review status and actual workflow results.
 Configuration rejects a case-insensitive collision with the effective review
 context, and all status-history reads use the same case-insensitive identity.
-It is green proactively until a breach is observed; a reported failure is sticky
+Once a job has executed it is green proactively until a breach is observed; a
+reported failure is sticky
 on the SHA across workflows and reruns. Status history and a post-success
 reconciliation prevent an observed finding from being cleared by a shorter run.
+Runs that executed no job publish nothing, and only a change of state or
+description is written: every status write emits a `status` event that can start
+status-triggered workflows, so evaluations of those runs must not republish an
+unchanged status. See [ADR 0004](decisions/0004-status-feedback-loop.md).
 Cancellation requires explicit mode plus Actions write on the installation
 token, and a final live attempt check. Accepted requests have separate KV
 receipts; neither KV nor the run-scoped cancel endpoint offers an atomic

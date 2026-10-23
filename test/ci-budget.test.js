@@ -118,14 +118,33 @@ function fixture({
   return { env, client, calls, live, options, evaluate, statuses };
 }
 
-function payload(action = "in_progress") {
+function payload(action = "in_progress", run = {}) {
   return {
     action,
     repository: { owner: { login: ref.owner }, name: ref.repo },
     installation: { id: ref.installationId },
-    workflow_run: { id: ref.runId, run_attempt: ref.attempt },
+    workflow_run: {
+      id: ref.runId,
+      run_attempt: ref.attempt,
+      head_sha: sha,
+      status:
+        { requested: "queued", completed: "completed" }[action] ??
+        "in_progress",
+      conclusion: action === "completed" ? "success" : null,
+      ...run,
+    },
   };
 }
+
+const kvTrap = () =>
+  new Proxy(
+    {},
+    {
+      get() {
+        throw new Error("unexpected KV call");
+      },
+    },
+  );
 
 test("CI budgeting is disabled without minutes; report is the safe enabled default", () => {
   assert.equal(resolveCiBudgetConfig().enabled, false);
@@ -228,7 +247,7 @@ test("a case-variant review context cannot publish budget success over a failed 
   assert.match(logs.join(" "), /CI budget disabled:.*case-insensitive/);
 });
 
-test("only supported workflow-run actions with complete coordinates enter the queue", () => {
+test("only supported workflow-run actions with complete coordinates are routed to CI budgeting", () => {
   for (const action of ["requested", "in_progress", "completed"]) {
     assert.deepEqual(ciRunRefFromEvent("workflow_run", payload(action)), ref);
   }
@@ -425,6 +444,311 @@ test("a success publication repairs an overlapping breach from status history", 
     ["success", "failure"],
   );
   assert.equal(f.calls.writes.at(-1).targetUrl, breach.target_url);
+});
+
+test("another run on the same SHA with the same verdict publishes nothing", async () => {
+  const f = fixture();
+  await f.evaluate({ now: start + 60_000 });
+  f.live.id = 20;
+  await evaluateCiRun(
+    f.env,
+    { ...ref, runId: 20 },
+    resolveCiBudgetConfig(f.env),
+    { ...f.options, now: start + 60_000 },
+  );
+  // Only the link would differ; republishing it emits another status event.
+  assert.deepEqual(
+    f.calls.writes.map((status) => [status.state, status.targetUrl]),
+    [
+      [
+        "success",
+        "https://github.com/example-org/example-repo/actions/runs/10/attempts/1",
+      ],
+    ],
+  );
+});
+
+test("budget status writes cannot sustain a status-triggered workflow loop", async () => {
+  // GitHub starts one run of an `on: status` workflow per status event in the
+  // repository and attributes it to the default-branch HEAD. A job `if:` skips
+  // every status except the one the workflow serves.
+  const env = {
+    CI_BUDGET_MINUTES: "10",
+    CI_BUDGET_MODE: "cancel",
+    PENDING_REVIEWS: new FakeQueue(),
+  };
+  const runs = new Map();
+  const statuses = [];
+  const deliveries = [];
+  const next = { requested: "in_progress", in_progress: "completed" };
+  const trigger = (executes) => {
+    const id = 100 + runs.size;
+    runs.set(id, { executes, action: null });
+    deliveries.push({ id, action: "requested" });
+  };
+  const stateOf = (id) => {
+    const { executes, action } = runs.get(id);
+    const done = action === "completed";
+    const job = executes
+      ? {
+          status: done ? "completed" : action === "requested" ? "queued" : action,
+          conclusion: done ? "success" : null,
+          started_at: action === "requested" ? null : iso(0),
+          completed_at: done ? iso(120_000) : null,
+        }
+      : {
+          status: done ? "completed" : "queued",
+          conclusion: done ? "skipped" : null,
+          started_at: null,
+          completed_at: null,
+        };
+    return {
+      run: {
+        id,
+        run_attempt: 1,
+        head_sha: sha,
+        event: "status",
+        status: action === "requested" ? "queued" : action,
+        conclusion: done ? (executes ? "success" : "skipped") : null,
+      },
+      jobs: [job],
+    };
+  };
+  const client = {
+    async workflowRun(id) {
+      return stateOf(id).run;
+    },
+    async workflowJobs(id) {
+      return stateOf(id).jobs;
+    },
+    async statusesForContext() {
+      return [...statuses];
+    },
+    async setStatus(_head, status) {
+      statuses.unshift({ ...status, target_url: status.targetUrl });
+      trigger(false);
+    },
+    async cancelWorkflowRun() {},
+  };
+  const options = {
+    now: start + 180_000,
+    getInstallationAccess: async () => ({
+      token: "test-installation-token",
+      permissions: { actions: "write", statuses: "write" },
+    }),
+    clientFactory: () => client,
+  };
+  // An external status event starts the one run whose job really executes.
+  trigger(true);
+  for (let delivered = 0; deliveries.length > 0 && delivered < 60; delivered += 1) {
+    const { id, action } = deliveries.shift();
+    runs.get(id).action = action;
+    await handleCiBudgetEvent(
+      env,
+      "workflow_run",
+      payload(action, stateOf(id).run),
+      options,
+    );
+    if (next[action]) {
+      deliveries.push({ id, action: next[action] });
+    }
+  }
+  assert.equal(deliveries.length, 0, "the status/run chain must terminate");
+  assert.deepEqual(
+    statuses.map((status) => status.state),
+    ["success"],
+  );
+  assert.equal(runs.size, 2);
+  assert.deepEqual([...env.PENDING_REVIEWS.records.keys()], []);
+});
+
+test("requested deliveries cost no KV or GitHub API call", async () => {
+  const f = fixture();
+  f.env.PENDING_REVIEWS = kvTrap();
+  let accessRequests = 0;
+  await handleCiBudgetEvent(f.env, "workflow_run", payload("requested"), {
+    ...f.options,
+    getInstallationAccess: async () => {
+      accessRequests += 1;
+      return f.options.getInstallationAccess();
+    },
+  });
+  assert.equal(accessRequests, 0);
+  assert.deepEqual(f.calls.reads, []);
+  assert.deepEqual(f.calls.writes, []);
+});
+
+test("a skipped run publishes nothing and is settled without reading jobs", async () => {
+  const f = fixture({ run: { status: "completed", conclusion: "skipped" } });
+  let accessRequests = 0;
+  let jobReads = 0;
+  f.client.workflowJobs = async () => {
+    jobReads += 1;
+    return [];
+  };
+  const options = {
+    ...f.options,
+    getInstallationAccess: async () => {
+      accessRequests += 1;
+      return f.options.getInstallationAccess();
+    },
+  };
+  // The signed terminal payload alone proves that no job executed.
+  await handleCiBudgetEvent(
+    f.env,
+    "workflow_run",
+    payload("completed", { conclusion: "skipped" }),
+    options,
+  );
+  assert.equal(accessRequests, 0);
+  assert.deepEqual(f.calls.reads, []);
+  assert.deepEqual(f.calls.writes, []);
+  assert.equal(f.env.PENDING_REVIEWS.records.size, 0);
+  // An attempt queued while it was in progress settles from the run object.
+  await f.env.PENDING_REVIEWS.put(
+    "ci-budget-run:v1:42:example-org:example-repo:10:1",
+    "queued",
+    { metadata: { ...ref, budgetMs: 600_000, nextCheckAt: 0 } },
+  );
+  const summary = await sweepCiBudgetRuns(f.env, options);
+  assert.equal(summary.errors, 0);
+  assert.equal(f.calls.reads.length, 1);
+  assert.equal(jobReads, 0);
+  assert.deepEqual(f.calls.writes, []);
+  assert.equal(f.env.PENDING_REVIEWS.records.size, 0);
+});
+
+test("attempts that have not started a job publish no budget claim", async () => {
+  const cancelled = fixture({
+    run: { status: "completed", conclusion: "cancelled" },
+    jobs: [
+      {
+        status: "completed",
+        conclusion: "cancelled",
+        started_at: null,
+        completed_at: iso(1_000),
+      },
+    ],
+  });
+  await handleCiBudgetEvent(
+    cancelled.env,
+    "workflow_run",
+    payload("completed", { conclusion: "cancelled" }),
+    cancelled.options,
+  );
+  assert.deepEqual(cancelled.calls.writes, []);
+  assert.equal(cancelled.env.PENDING_REVIEWS.records.size, 0);
+  // Waiting for a runner: still tracked for its deadline, but nothing to claim.
+  const queued = fixture({ jobs: [{ status: "queued", started_at: null }] });
+  await handleCiBudgetEvent(queued.env, "workflow_run", payload(), queued.options);
+  assert.deepEqual(queued.calls.writes, []);
+  assert.equal(queued.env.PENDING_REVIEWS.records.size, 1);
+});
+
+test("completed deliveries settle the attempt and queue only failed evaluations", async () => {
+  const f = fixture({
+    jobs: [{ status: "in_progress", started_at: iso(0) }],
+  });
+  await handleCiBudgetEvent(f.env, "workflow_run", payload(), {
+    ...f.options,
+    now: start + 60_000,
+  });
+  assert.equal(f.env.PENDING_REVIEWS.records.size, 1);
+  f.live.status = "completed";
+  f.client.workflowJobs = async () => [
+    { status: "completed", started_at: iso(0), completed_at: iso(120_000) },
+  ];
+  const attemptReads = f.calls.reads.length;
+  await handleCiBudgetEvent(f.env, "workflow_run", payload("completed"), {
+    ...f.options,
+    now: start + 180_000,
+  });
+  // The signed terminal payload replaces the attempt read.
+  assert.equal(f.calls.reads.length, attemptReads);
+  assert.equal(f.env.PENDING_REVIEWS.records.size, 0);
+  assert.deepEqual(
+    f.calls.writes.map((status) => status.state),
+    ["success"],
+  );
+  // A job list that has not caught up to completion is retried by the sweep.
+  const lagging = fixture({
+    run: { status: "completed" },
+    jobs: [{ status: "in_progress", started_at: iso(0) }],
+  });
+  await assert.rejects(
+    handleCiBudgetEvent(
+      lagging.env,
+      "workflow_run",
+      payload("completed"),
+      lagging.options,
+    ),
+    /retry required/,
+  );
+  assert.equal(lagging.env.PENDING_REVIEWS.records.size, 1);
+  lagging.client.workflowJobs = async () => [
+    { status: "completed", started_at: iso(0), completed_at: iso(700_000) },
+  ];
+  const summary = await sweepCiBudgetRuns(lagging.env, {
+    ...lagging.options,
+    now: start + 900_000,
+  });
+  assert.equal(summary.updated, 1);
+  assert.equal(lagging.calls.writes[0].state, "failure");
+  assert.equal(lagging.env.PENDING_REVIEWS.records.size, 0);
+});
+
+test("a finished attempt leaves no queue entry when its deliveries arrive out of order or race KV's write limit", async () => {
+  const f = fixture({ run: { status: "completed", conclusion: "skipped" } });
+  const queue = f.env.PENDING_REVIEWS;
+  await handleCiBudgetEvent(
+    f.env,
+    "workflow_run",
+    payload("completed", { conclusion: "skipped" }),
+    f.options,
+  );
+  // in_progress processed after completion still enqueues first, then settles.
+  await handleCiBudgetEvent(f.env, "workflow_run", payload(), f.options);
+  assert.equal(queue.records.size, 0);
+  // The delete right after that enqueue can be rejected by KV's per-key limit.
+  const pauses = [];
+  let rejections = 1;
+  const remove = queue.delete.bind(queue);
+  queue.delete = async (key) => {
+    if (rejections-- > 0) {
+      throw new Error("KV write limit");
+    }
+    return remove(key);
+  };
+  await handleCiBudgetEvent(f.env, "workflow_run", payload(), {
+    ...f.options,
+    sleepFn: async (ms) => pauses.push(ms),
+  });
+  assert.deepEqual(pauses, [1_000]);
+  assert.equal(queue.records.size, 0);
+  assert.deepEqual(f.calls.writes, []);
+});
+
+test("status-triggered runs stay enforced at the budget", async () => {
+  // Pins that runs GitHub attributes to the default-branch HEAD get no
+  // exception from queueing, reporting, or cancellation.
+  const f = fixture({ mode: "cancel", run: { event: "status" } });
+  await handleCiBudgetEvent(
+    f.env,
+    "workflow_run",
+    payload("in_progress", { event: "status" }),
+    { ...f.options, now: start + 1 },
+  );
+  await sweepCiBudgetRuns(f.env, { ...f.options, now: start + 2 });
+  const summary = await sweepCiBudgetRuns(f.env, {
+    ...f.options,
+    now: start + 600_001,
+  });
+  assert.equal(summary.cancelled, 1);
+  assert.deepEqual(f.calls.cancel, [10]);
+  assert.deepEqual(
+    f.calls.writes.map((status) => status.state),
+    ["success", "failure"],
+  );
 });
 
 test("no cancellation occurs before the deadline, after completion, or for a newer attempt", async () => {
@@ -696,15 +1020,7 @@ test("disabled and invalid deployments make no KV or GitHub calls and log invali
   context.mock.method(console, "error", (...args) => logs.push(args.join(" ")));
   const f = fixture({ mode: "cancel" });
   delete f.env.CI_BUDGET_MINUTES;
-  const trap = new Proxy(
-    {},
-    {
-      get() {
-        throw new Error("unexpected KV call");
-      },
-    },
-  );
-  f.env.PENDING_REVIEWS = trap;
+  f.env.PENDING_REVIEWS = kvTrap();
   assert.equal(
     await handleCiBudgetEvent(f.env, "workflow_run", payload(), f.options),
     null,
