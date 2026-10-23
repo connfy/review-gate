@@ -30,6 +30,11 @@ import {
   settlePendingReview,
   trackPendingReview,
 } from "./pending.js";
+import {
+  ciRunRefFromEvent,
+  handleCiBudgetEvent,
+  sweepCiBudgetRuns,
+} from "./ci-budget.js";
 
 const CLEAN_COMMENT_RETRY_DELAY_MS = 3_000;
 const REVIEW_START_RETRY_DELAY_MS = 15_000;
@@ -712,6 +717,8 @@ export async function sweepOpenPullRequests(env, config, options = {}) {
 }
 
 export async function runScheduledSweep(env, config, options = {}) {
+  // Actions deadlines have their own cap and cannot consume either PR budget.
+  const ciBudget = await (options.ciBudgetSweep ?? sweepCiBudgetRuns)(env);
   const maxPendingPullRequests =
     options.maxPendingPullRequests ??
     parsePositiveInteger(
@@ -741,13 +748,14 @@ export async function runScheduledSweep(env, config, options = {}) {
 
   const { processedRefs: _processedRefs, ...pendingSummary } = pending;
   return {
+    ciBudget,
     pending: pendingSummary,
     open,
     pullRequests: pending.pullRequests + open.pullRequests,
     updated: pending.updated + open.updated,
     unchanged: pending.unchanged + open.unchanged,
-    errors: pending.errors + open.errors,
-    limited: pending.limited || open.limited,
+    errors: pending.errors + open.errors + ciBudget.errors,
+    limited: pending.limited || open.limited || ciBudget.limited,
   };
 }
 
@@ -879,6 +887,15 @@ export default {
       payload = JSON.parse(rawBody);
     } catch {
       return new Response("Invalid JSON", { status: 400 });
+    }
+
+    if (ciRunRefFromEvent(eventName, payload)) {
+      ctx.waitUntil(
+        handleCiBudgetEvent(env, eventName, payload).catch((error) => {
+          console.error("CI budget webhook evaluation failed:", error);
+        }),
+      );
+      return new Response("Accepted", { status: 202 });
     }
 
     const ref = pullRequestRefFromEvent(eventName, payload);

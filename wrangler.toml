@@ -2,8 +2,8 @@ name = "review-gate"
 main = "src/index.js"
 compatibility_date = "2026-05-01"
 
-# Durable priority queue for PR heads that are waiting on a reaction-only
-# review result. Wrangler automatically provisions this KV namespace on deploy
+# Durable priority queues for pending PR heads and optional Actions deadlines.
+# Wrangler automatically provisions this KV namespace on deploy
 # when no resource ID is configured.
 [[kv_namespaces]]
 binding = "PENDING_REVIEWS"
@@ -16,6 +16,13 @@ binding = "PENDING_REVIEWS"
 [vars]
 # Commit status context that branch protection requires.
 STATUS_CONTEXT = "review-gate/codex-clean"
+# CI duration budgeting is opt-in and deployment-wide (no repository overrides).
+# Leave CI_BUDGET_MINUTES absent to preserve existing deployments. To activate:
+# CI_BUDGET_MINUTES = "10"
+# CI_BUDGET_MODE = "report" # or "cancel", requiring approved Actions: write
+# CI_BUDGET_STATUS_CONTEXT = "review-gate/ci-budget"
+# SWEEP_MAX_CI_RUNS = "2" # separate per-sweep cap, independent of both PR queues
+# Configure these in your deployment's vars; do not store credentials here.
 # Comma-separated bot login(s) whose clean review counts as a pass.
 REVIEW_BOT_LOGINS = "chatgpt-codex-connector,chatgpt-codex-connector[bot]"
 # Substring that marks a clean review from the bot above.

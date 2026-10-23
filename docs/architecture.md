@@ -15,6 +15,10 @@ Workers KV namespace.
   `success`, `pending`, or `failure` result.
 - `src/pending.js` owns Workers KV key encoding, TTL tracking, listing, and
   settlement for pending PR heads.
+- `src/ci-budget.js` owns the optional deployment-wide Actions duration policy,
+  attempt deadline queue, sticky budget status, and permission-checked ordinary
+  cancellation. It shares the KV binding, not the review queue's key prefix or
+  evaluation budget.
 
 ## Runtime flow
 
@@ -28,6 +32,30 @@ Workers KV namespace.
    the matching queued head.
 5. Every three minutes, the scheduled handler evaluates queued pending heads
    and the rotating open-PR fallback with separate budgets.
+
+When CI budgeting is enabled, signed `workflow_run` webhooks instead enqueue and
+evaluate the referenced workflow attempt. GitHub attempt/job reads determine
+wall time from the first executed job to completion (or now), excluding the
+initial queue. The scheduled handler processes due CI attempts before both PR
+paths, with a third independent cap. Bounded queue enumeration resumes from a
+persisted KV cursor across sweeps and wraps when listing completes, so later
+installations are not hidden behind an always-full first segment. Due attempts
+are sorted within that segment. Initial webhook writes are not immediately
+overwritten; only scheduled evaluations reschedule deadlines and clean terminal
+records. Permission/API failures remain queued. Budget configuration changes
+invalidate old deadlines. No CI queue listing or Actions request occurs when
+the budget is absent.
+
+The budget status is separate from review status and actual workflow results.
+Configuration rejects a case-insensitive collision with the effective review
+context, and all status-history reads use the same case-insensitive identity.
+It is green proactively until a breach is observed; a reported failure is sticky
+on the SHA across workflows and reruns. Status history and a post-success
+reconciliation prevent an observed finding from being cleared by a shorter run.
+Cancellation requires explicit mode plus Actions write on the installation
+token, and a final live attempt check. Accepted requests have separate KV
+receipts; neither KV nor the run-scoped cancel endpoint offers an atomic
+exactly-once guarantee. See [ADR 0003](decisions/0003-ci-duration-budget.md).
 
 The queue is an optimization, not a new authority. GitHub remains the source of
 truth, and every scheduled retry re-fetches the current PR, reviews, reactions,
@@ -56,6 +84,13 @@ selects the affected PR.
   remains available if an entry expires or KV is unavailable.
 - Pending and fallback sweeps have separate caps, so long-running reviews cannot
   starve reaction-only PRs that were not queued.
+- Enabled CI sweeps also have a separate cap and bounded queue/job/status reads.
+  A three-minute cron and eventual consistency give best-effort deadline checks,
+  not an exact stop-time guarantee. `limited` warnings expose delayed work.
+  Verified active CI entries renew retention of budget duration plus 24 hours;
+  failures preserve the previous expiry so inaccessible runs do not accumulate.
+  Workflow event redelivery recovers lost or outage-expired entries; the PR
+  fallback does not discover runs.
 - The fallback over-fetches by the number of queued PRs it excludes, preserving
   its evaluation budget when queued PRs lead an open-PR page.
 - Queue keys include the head SHA, review-request generation, and a unique write

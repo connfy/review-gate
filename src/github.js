@@ -9,6 +9,11 @@ const TOKEN_REFRESH_SKEW_MS = 60_000;
 let privateKeyCache = null;
 const installationTokenCache = new Map();
 
+// GitHub treats commit status contexts as case-insensitive identities.
+export function normalizeStatusContext(context) {
+  return String(context ?? "").toLowerCase();
+}
+
 function base64UrlEncode(bytes) {
   let binary = "";
   for (const byte of bytes) {
@@ -102,7 +107,9 @@ async function githubFetchResponse(token, method, path, { body, accept } = {}) {
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`GitHub ${method} ${path} failed: ${response.status} ${text}`);
+    const error = new Error(`GitHub ${method} ${path} failed: ${response.status} ${text}`);
+    error.status = response.status;
+    throw error;
   }
   const text = await response.text();
   return {
@@ -189,11 +196,26 @@ export async function getCachedInstallationToken(
   privateKeyPem,
   installationId,
 ) {
+  const access = await getCachedInstallationAccess(
+    appId,
+    privateKeyPem,
+    installationId,
+  );
+  return access.token;
+}
+
+// Keep GitHub's granted permissions with the token. Public Actions reads alone
+// cannot prove that an installation approved Actions access.
+export async function getCachedInstallationAccess(
+  appId,
+  privateKeyPem,
+  installationId,
+) {
   const cacheKey = `${appId}:${installationId}`;
   const now = Date.now();
   const cached = installationTokenCache.get(cacheKey);
   if (cached && cached.expiresAtMs - TOKEN_REFRESH_SKEW_MS > now) {
-    return cached.token;
+    return cached;
   }
 
   const jwt = await createAppJwt(appId, privateKeyPem);
@@ -202,11 +224,13 @@ export async function getCachedInstallationToken(
   const expiresAtMs = Number.isFinite(parsedExpiresAt)
     ? parsedExpiresAt
     : now + 55 * 60 * 1000;
-  installationTokenCache.set(cacheKey, {
+  const access = {
     token: data.token,
     expiresAtMs,
-  });
-  return data.token;
+    permissions: data.permissions ?? {},
+  };
+  installationTokenCache.set(cacheKey, access);
+  return access;
 }
 
 export async function listAppInstallations(appId, privateKeyPem, options = {}) {
@@ -278,6 +302,54 @@ export class RepoClient {
       this.token,
       "GET",
       `/repos/${this.owner}/${this.repo}/pulls/${prNumber}`,
+    );
+  }
+
+  workflowRun(runId, attempt) {
+    return githubFetch(
+      this.token,
+      "GET",
+      `/repos/${this.owner}/${this.repo}/actions/runs/${runId}` +
+        (attempt == null ? "" : `/attempts/${attempt}`),
+    );
+  }
+
+  async workflowJobs(runId, attempt) {
+    const jobs = [];
+    // Bound large matrices rather than make a decision from a truncated list.
+    for (let page = 1; page <= 10; page += 1) {
+      const response = await githubFetchResponse(
+        this.token,
+        "GET",
+        `/repos/${this.owner}/${this.repo}/actions/runs/${runId}` +
+          `/attempts/${attempt}/jobs?per_page=100&page=${page}`,
+      );
+      const rows = response.data?.jobs;
+      if (!Array.isArray(rows)) {
+        throw new Error("CI budget: expected a workflow jobs list");
+      }
+      jobs.push(...rows);
+      const total = response.data.total_count;
+      if (!Number.isSafeInteger(total) || total < jobs.length) {
+        throw new Error("CI budget: inconsistent workflow jobs count; retry required");
+      }
+      if (jobs.length === total) {
+        return jobs;
+      }
+      if (rows.length < 100) {
+        throw new Error("CI budget: incomplete workflow jobs list; retry required");
+      }
+    }
+    throw new Error(
+      "CI budget: workflow exceeds the 1,000-job inspection cap; no cancellation attempted",
+    );
+  }
+
+  cancelWorkflowRun(runId) {
+    return githubFetch(
+      this.token,
+      "POST",
+      `/repos/${this.owner}/${this.repo}/actions/runs/${runId}/cancel`,
     );
   }
 
@@ -395,13 +467,22 @@ export class RepoClient {
   }
 
   async latestStatusForContext(sha) {
+    const statuses = await this.statusesForContext(sha);
+    return statuses[0] ?? null;
+  }
+
+  async statusesForContext(sha, { requireComplete = false } = {}) {
     const statuses = await githubPaginate(
       this.token,
       `/repos/${this.owner}/${this.repo}/commits/${sha}/statuses`,
-      { limit: 1000 },
+      { limit: requireComplete ? 1001 : 1000 },
     );
-    return (
-      statuses.find((status) => status?.context === this.statusContext) ?? null
+    if (requireComplete && statuses.length > 1000) {
+      throw new Error("commit status history exceeds the 1,000-status inspection cap");
+    }
+    const context = normalizeStatusContext(this.statusContext);
+    return statuses.filter(
+      (status) => normalizeStatusContext(status?.context) === context,
     );
   }
 }
