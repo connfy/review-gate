@@ -141,9 +141,11 @@ Subscribe it to these five events:
 - Pull request review thread
 - Issue comment
 
-For the optional CI budget, also subscribe to **Workflow run** (`workflow_run`:
-`requested`, `in_progress`, and `completed`). No `workflow_job` subscription is
-needed; the Worker reads jobs for the exact workflow attempt through the API.
+For the optional CI budget, also subscribe to **Workflow run** (`workflow_run`).
+Its `in_progress` and `completed` actions drive the budget; `requested` is
+acknowledged without work because no job has started yet. No `workflow_job`
+subscription is needed; the Worker reads jobs for the exact workflow attempt
+through the API.
 
 Do not skip that last one, **Issue comment**. Codex clean-pass messages usually
 arrive as PR timeline comments, and GitHub sends those as `issue_comment`
@@ -268,16 +270,37 @@ token, including for public repositories where successful reads alone do not
 prove permission approval. A cached token may take up to an hour to refresh
 after approval.
 
-The separate `review-gate/ci-budget` commit status links to the workflow attempt
-on its `head_sha`. It is proactively green while no breach is known, including
-while workflows are queued or running, and turns red when a workflow exceeds
-the budget. Normal completed runs therefore reach success. Require this context
-in branch protection **alongside your actual CI checks**, not instead of them:
-budget success does not mean CI is finished or tests passed. A reported breach
-stays failed on that SHA, even if another workflow or a rerun is shorter. Fix the
-excess in a new commit rather than rerunning the same SHA to erase the finding.
-Repositories/branches with no Actions run receive no budget status; do not
-require the context there. Enabling the feature does not backfill old runs.
+The separate `review-gate/ci-budget` commit status is written on the workflow
+run's `head_sha` and links to the attempt that established its current state.
+Once a workflow has started a job, the status is proactively green while no
+breach is known, including while workflows are still running, and turns red when
+a workflow exceeds the budget. Normal completed runs therefore reach success. A
+run that executes no job (every job skipped by its `if:`, or cancelled before a
+job started) consumed no CI time and writes no budget status. The status is
+written only when its state or description changes: another run on the same SHA
+with the same verdict does not rewrite it just to update the link. Require this
+context in branch protection **alongside your actual CI checks**, not instead of
+them: budget success does not mean CI is finished or tests passed. A reported
+breach stays failed on that SHA, even if another workflow or a rerun is shorter.
+Fix the excess in a new commit rather than rerunning the same SHA to erase the
+finding. A commit on which no Actions job executes (no workflow ran, or every
+job was skipped by its `if:`) receives no budget status, so requiring this
+context blocks it. Require it only where every gated commit runs at least one
+job. Enabling the feature does not backfill old runs.
+
+> **Workflows triggered `on: status`.** Every commit status write, including
+> this budget status, emits a `status` event. GitHub starts one run of each
+> status-triggered workflow per event and attributes it to the default-branch
+> HEAD, not to the commit whose status changed. Because the budget status is
+> rewritten only when its meaning changes and job-less runs write nothing, these
+> runs cannot keep re-triggering each other, but each budget status change still
+> starts one more run. Give such workflows a job-level `if:` on
+> `github.event.context` and `github.event.state`, so unrelated status events
+> produce skipped runs: they use no runner time, write no budget status, and cost
+> the Worker no GitHub API call beyond a run and jobs read if GitHub delivers
+> `in_progress` for them. Status-triggered runs that
+> do execute stay under the budget: their status (and any breach) appears on the
+> default-branch HEAD, and `cancel` mode still cancels them at the budget.
 
 The budget measures **workflow-attempt wall time**, from the first executed
 job's `started_at` to the last executed job's `completed_at` (or now while the
@@ -288,19 +311,25 @@ Never-started cancelled jobs are also excluded. Job timestamps avoid treating
 the run's mutable `updated_at` as completion time.
 This is a duration limit, not a calculation of billed, rounded runner minutes.
 
-Signed workflow webhooks enqueue attempts in the existing `PENDING_REVIEWS` KV
-namespace. The scheduled sweep checks due attempts before the review sweeps,
+Signed `in_progress` webhooks enqueue attempts in the existing `PENDING_REVIEWS`
+KV namespace. The scheduled sweep checks due attempts before the review sweeps,
 using its own `SWEEP_MAX_CI_RUNS` cap (default `2`). Each sweep scans at most ten
 1,000-key pages and persists the continuation cursor for the next sweep, wrapping
 at the end. Later installations therefore remain reachable even when earlier
 queue entries are not due yet. Due attempts are ordered by deadline within the
 scanned segment. Once the first sweep discovers the execution start, it schedules
-the next API check for the deadline. Completed
-webhooks report promptly; scheduled live reads settle queue entries. Verified
-active records renew their retention of budget duration plus 24 hours. Failed
-reads preserve the previous expiry, so removed installations cannot accumulate
-forever. Accepted-cancel receipts use the same retention window. After an outage
-outlasts retention, redeliver the workflow event to restore tracking.
+the next API check for the deadline. A completed webhook evaluates the finished
+attempt from its signed payload and reports promptly. The webhook that sees an
+attempt finished removes its queue entry, retrying once after KV's one-second
+per-key write interval; only a failed evaluation is queued for a scheduled
+retry. Finished and skipped runs therefore normally do not occupy the sweep
+cap. Scheduled live reads settle any other entries. Verified active records renew their retention of
+budget duration plus 24 hours. Failed reads preserve the previous expiry, so
+removed installations cannot accumulate forever. Accepted-cancel receipts use
+the same retention window. An active attempt whose `in_progress` delivery was
+lost is not tracked (its completion is still reported); after such a loss, or
+an outage that outlasts retention, redeliver the workflow event to restore
+tracking.
 
 **Timing is best-effort, not a hard ten-minute kill switch.** With the default
 three-minute cron, a due run is normally checked on the next sweep; KV
@@ -333,7 +362,7 @@ different reviewer bot or change the trigger text.
 | `STATUS_CONTEXT` | `review-gate/codex-clean` | The commit status name to write. |
 | `CI_BUDGET_MINUTES` | absent (disabled) | Positive decimal minutes, at whole-millisecond precision. One limit for all installed repositories. |
 | `CI_BUDGET_MODE` | `report` | `report` writes status only; `cancel` also requests cancellation after a breach if Actions write is approved. Other values disable budgeting. |
-| `CI_BUDGET_STATUS_CONTEXT` | `review-gate/ci-budget` | Separate budget status context; must be nonempty and different from the effective `STATUS_CONTEXT`, ignoring case. A collision disables budgeting and logs an error. |
+| `CI_BUDGET_STATUS_CONTEXT` | `review-gate/ci-budget` | Separate budget status context; must be nonempty and different from the effective `STATUS_CONTEXT`, ignoring case. A collision disables budgeting and logs an error. If several deployments budget the same repository, give each its own context. |
 | `SWEEP_MAX_CI_RUNS` | `2` | Positive integer cap on due workflow attempts evaluated per sweep, separate from both review budgets. |
 | `REVIEW_BOT_LOGINS` | `chatgpt-codex-connector,chatgpt-codex-connector[bot]` | Bot logins whose clean pass counts (comma-separated). |
 | `CLEAN_REVIEW_TEXT` | `Codex Review: Didn't find any major issues.` | Text that marks a clean review pass. |
@@ -379,6 +408,16 @@ not the entire queue. Run/job/status reads only cover due attempts within the
 evaluation cap. Job inspection is capped at 1,000 jobs per attempt and status
 inspection at 1,000 statuses per SHA. Incomplete or oversized histories log an error and stay
 retryable rather than silently passing or cancelling from partial evidence.
+
+Each `workflow_run` delivery has a small, bounded GitHub API cost on top of the
+cached installation token. `requested` makes no KV or API call. A `completed`
+delivery concluded `skipped` makes no API call. Other deliveries read the jobs
+of one attempt (one page per 100 jobs); `in_progress` also reads the attempt
+itself. Only after a job has started is the SHA's status history read (one page
+per 100 statuses of all contexts on that SHA), and a status is written only when
+its state or description changes (a success write is followed by one more
+history read to repair an overlapping breach). A breach in `cancel` mode adds a
+live run read and the cancel request.
 
 ## Architecture and decisions
 

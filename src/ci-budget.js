@@ -13,6 +13,7 @@ const CANCEL_PREFIX = "ci-budget-cancel:v1:";
 const SWEEP_CURSOR_KEY = "ci-budget-sweep-cursor:v1";
 const SWEEP_INTERVAL_MS = 3 * 60 * 1000;
 const MAX_QUEUE_KEYS = 10_000;
+const KV_WRITE_INTERVAL_MS = 1_000;
 // Match the existing pending queue's 24-hour recovery horizon. Successful live
 // evaluations renew it; failures cannot keep inaccessible records alive forever.
 const RETRY_HORIZON_SECONDS = 24 * 60 * 60;
@@ -112,6 +113,20 @@ function timestamp(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+const NOT_STARTED = Object.freeze({
+  startedAt: null,
+  deadline: null,
+  elapsedMs: 0,
+  exceeded: false,
+});
+
+// GitHub concludes a run `skipped` only when none of its jobs started (each was
+// skipped, typically by its `if:`). It consumed no CI time, so the run object
+// alone settles it without reading jobs.
+function concludedWithoutJobs(run) {
+  return run?.status === "completed" && run?.conclusion === "skipped";
+}
+
 // A workflow is a pipeline, not a sum of parallel runner minutes. Use its
 // executed jobs to exclude the initial runner queue and avoid updated_at (a
 // mutable run timestamp) as a completion clock. Dependency gaps after the first
@@ -137,7 +152,7 @@ export function ciBudgetTiming(run, jobs, budgetMs, now = Date.now()) {
       ),
   );
   if (executed.length === 0) {
-    return { startedAt: null, deadline: null, elapsedMs: 0, exceeded: false };
+    return { ...NOT_STARTED };
   }
   const starts = executed.map((job) => timestamp(job.started_at));
   if (starts.includes(null) || starts.some((start) => start > now)) {
@@ -170,11 +185,15 @@ export function ciBudgetTiming(run, jobs, budgetMs, now = Date.now()) {
   };
 }
 
-function sameStatus(current, result) {
+// A status means its state and description; the link is provenance. Every
+// write emits a `status` event, which starts any workflow triggered on status
+// (attributed to the default-branch HEAD) and so another evaluation. Republishing
+// an unchanged meaning only to point at a newer attempt would let each such run
+// trigger the next one, so only a change of meaning is published.
+function sameMeaning(current, result) {
   return (
     current?.state === result.state &&
-    current?.description === result.description &&
-    current?.target_url === result.targetUrl
+    current?.description === result.description
   );
 }
 
@@ -193,7 +212,7 @@ export async function reportCiBudgetStatus(client, sha, result) {
         targetUrl: breach.target_url,
       }
     : result;
-  if (sameStatus(statuses[0], effective)) {
+  if (sameMeaning(statuses[0], effective)) {
     return false;
   }
   await client.setStatus(sha, effective);
@@ -208,7 +227,7 @@ export async function reportCiBudgetStatus(client, sha, result) {
         description: concurrentBreach.description,
         targetUrl: concurrentBreach.target_url,
       };
-      if (!sameStatus(statuses[0], effective)) {
+      if (!sameMeaning(statuses[0], effective)) {
         await client.setStatus(sha, effective);
       }
     }
@@ -257,6 +276,37 @@ async function enqueue(namespace, ref, config, now) {
   return key;
 }
 
+async function settle(namespace, ref, { receipt = true } = {}) {
+  await namespace.delete(queueKey(ref));
+  if (receipt) {
+    await namespace.delete(queueKey(ref, CANCEL_PREFIX));
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// A finished attempt needs no future check, so the delivery that sees it
+// finished removes its entry and leaves the capped sweep to live runs. Cancel
+// receipts exist only after a breach; any other leftover receipt simply expires.
+// KV accepts one write per second per key, and this delete can follow an
+// in_progress enqueue of the same attempt within that second, so retry once
+// after it. An entry that still remains is settled by the sweep.
+async function settleFinished(namespace, ref, exceeded, pause = sleep) {
+  const settleOptions = { receipt: exceeded };
+  try {
+    await settle(namespace, ref, settleOptions);
+  } catch {
+    await pause(KV_WRITE_INTERVAL_MS);
+    try {
+      await settle(namespace, ref, settleOptions);
+    } catch (error) {
+      console.warn("CI budget: finished attempt left for the sweep:", error);
+    }
+  }
+}
+
 export async function evaluateCiRun(env, ref, config, options = {}) {
   if (!config.enabled) {
     return { updated: false, cancelled: false, completed: false };
@@ -266,9 +316,13 @@ export async function evaluateCiRun(env, ref, config, options = {}) {
   }
   const namespace = requireQueue(env);
   const now = options.now ?? Date.now();
-  const key = options.fromSweep
-    ? queueKey(ref)
-    : await enqueue(namespace, ref, config, now);
+  const key = queueKey(ref);
+  // Queue an active attempt before API evaluation so failures stay retryable.
+  // A signed completed attempt needs no future check; its caller queues it
+  // only if this evaluation fails.
+  if (!options.fromSweep && !options.completedRun) {
+    await enqueue(namespace, ref, config, now);
+  }
   const access = await (
     options.getInstallationAccess ?? getCachedInstallationAccess
   )(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY, ref.installationId);
@@ -301,7 +355,8 @@ export async function evaluateCiRun(env, ref, config, options = {}) {
         config.statusContext,
       )
     : new RepoClient(access.token, ref.owner, ref.repo, config.statusContext);
-  const run = await client.workflowRun(ref.runId, ref.attempt);
+  const run =
+    options.completedRun ?? (await client.workflowRun(ref.runId, ref.attempt));
   if (
     Number(run.id) !== ref.runId ||
     Number(run.run_attempt) !== ref.attempt ||
@@ -311,16 +366,28 @@ export async function evaluateCiRun(env, ref, config, options = {}) {
       "CI budget: workflow identity mismatch; no cancellation attempted",
     );
   }
-  const jobs = await client.workflowJobs(ref.runId, ref.attempt);
-  const timing = ciBudgetTiming(run, jobs, config.budgetMs, now);
-  const result = {
-    state: timing.exceeded ? "failure" : "success",
-    description: timing.exceeded
-      ? `CI exceeded ${config.minutes}m budget; review for excess and optimize, not a longer timeout.`
-      : `No CI budget breach observed (${config.minutes}m limit); workflows may still be running.`,
-    targetUrl: `https://github.com/${ref.owner}/${ref.repo}/actions/runs/${ref.runId}/attempts/${ref.attempt}`,
-  };
-  const updated = await reportCiBudgetStatus(client, run.head_sha, result);
+  const timing = concludedWithoutJobs(run)
+    ? { ...NOT_STARTED }
+    : ciBudgetTiming(
+        run,
+        await client.workflowJobs(ref.runId, ref.attempt),
+        config.budgetMs,
+        now,
+      );
+  let updated = false;
+  // The budget measures executed jobs. Until one has started (still queued,
+  // skipped, or cancelled before starting) there is no duration to judge, so
+  // claim nothing: such a run consumed no CI time, and a status would only
+  // emit another status event.
+  if (timing.startedAt !== null) {
+    updated = await reportCiBudgetStatus(client, run.head_sha, {
+      state: timing.exceeded ? "failure" : "success",
+      description: timing.exceeded
+        ? `CI exceeded ${config.minutes}m budget; review for excess and optimize, not a longer timeout.`
+        : `No CI budget breach observed (${config.minutes}m limit); workflows may still be running.`,
+      targetUrl: `https://github.com/${ref.owner}/${ref.repo}/actions/runs/${ref.runId}/attempts/${ref.attempt}`,
+    });
+  }
   let cancelled = false;
   const cancelKey = queueKey(ref, CANCEL_PREFIX);
   if (
@@ -354,13 +421,13 @@ export async function evaluateCiRun(env, ref, config, options = {}) {
     }
   }
   const completed = run.status === "completed";
-  // Only the sweep settles/reschedules existing keys. A webhook only enqueues
-  // once: writing a deadline immediately after enqueue would exceed KV's
-  // one-write-per-second limit on the same key. Terminal webhooks leave cleanup
-  // to the next live sweep, as the pending-review queue already does.
+  // Only the sweep reschedules existing keys. A webhook only enqueues once:
+  // writing a deadline immediately after enqueue would exceed KV's
+  // one-write-per-second limit on the same key. A delivery that sees its
+  // attempt finished settles it in handleCiBudgetEvent; the sweep settles the
+  // rest.
   if (completed && options.fromSweep) {
-    await namespace.delete(key);
-    await namespace.delete(cancelKey);
+    await settle(namespace, ref);
   } else if (options.fromSweep) {
     const expiration = expiresAt(config, now);
     await namespace.put(key, "queued", {
@@ -390,7 +457,44 @@ export async function handleCiBudgetEvent(
   if (!config.enabled || !ref) {
     return null;
   }
-  return evaluateCiRun(env, ref, config, options);
+  // A requested attempt has not started a job: there is no duration to judge
+  // and no deadline to schedule. Its in_progress delivery queues it.
+  if (payload.action === "requested") {
+    return { updated: false, cancelled: false, completed: false };
+  }
+  const namespace = requireQueue(env);
+  // A completed attempt is immutable and its signed payload is GitHub's final
+  // record of it, so evaluate from it instead of reading the attempt; a
+  // `skipped` conclusion needs no API call at all. Only a failed evaluation is
+  // queued, for a scheduled retry.
+  const run = payload.workflow_run;
+  const completedRun =
+    payload.action === "completed" && run.status === "completed"
+      ? run
+      : undefined;
+  let result = {
+    updated: false,
+    cancelled: false,
+    completed: true,
+    ...NOT_STARTED,
+  };
+  if (!concludedWithoutJobs(completedRun)) {
+    try {
+      result = await evaluateCiRun(env, ref, config, {
+        ...options,
+        completedRun,
+      });
+    } catch (error) {
+      if (completedRun) {
+        await enqueue(namespace, ref, config, options.now ?? Date.now());
+      }
+      throw error;
+    }
+  }
+  if (result.completed) {
+    await settleFinished(namespace, ref, result.exceeded, options.sleepFn);
+  }
+  return result;
 }
 
 export async function sweepCiBudgetRuns(env, options = {}) {
