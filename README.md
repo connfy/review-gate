@@ -25,6 +25,8 @@ Why you'll want it:
 - Pending reviews are queued in Workers KV and checked before the broad fallback
   sweep, so latency does not grow with the number of installed repositories.
 - One Worker plus one GitHub App covers dozens of repositories at once.
+- An optional deployment-wide CI duration budget reports long Actions workflows
+  and can request cancellation without adding a polling workflow to each repo.
 - Push a new commit and the status automatically resets to red. No more
   accidental merges on stale approvals.
 - Use it as a soft signal (soft gate), or wire it into branch protection as a
@@ -126,9 +128,10 @@ Give it these **Repository permissions**:
 
 | Permission | Access | Why it's needed |
 | --- | --- | --- |
-| Commit statuses | Read and write | To write `review-gate/codex-clean` onto the PR head SHA. |
+| Commit statuses | Read and write | To write the review status and optional CI budget status onto commit SHAs. |
 | Pull requests | Read-only | To read PR state, reviews, inline comments, and review threads. |
 | Issues | Read-only | To receive PR timeline comments and read PR body reactions. GitHub models PR comments and PR bodies as issues internally. |
+| Actions (optional CI budget) | Read-only for `report`; Read and write for `cancel` | To inspect workflow attempts and job timing; write is required to cancel a run. |
 
 Subscribe it to these five events:
 
@@ -137,6 +140,10 @@ Subscribe it to these five events:
 - Pull request review comment
 - Pull request review thread
 - Issue comment
+
+For the optional CI budget, also subscribe to **Workflow run** (`workflow_run`:
+`requested`, `in_progress`, and `completed`). No `workflow_job` subscription is
+needed; the Worker reads jobs for the exact workflow attempt through the API.
 
 Do not skip that last one, **Issue comment**. Codex clean-pass messages usually
 arrive as PR timeline comments, and GitHub sends those as `issue_comment`
@@ -234,6 +241,84 @@ Note that this App deliberately does not ask for heavy permissions like
 `Administration: write` just to create rulesets for you. Not holding that
 permission makes it much easier — and safer — to install.
 
+## Optional CI duration budget
+
+Actions minutes are a budget. Long CI is a finding to review for excess and
+optimize, not a reason to raise its timeout. To apply a ten-minute limit to
+**all Actions workflows in every repository installed on this deployment**,
+add these non-secret deployment variables:
+
+```toml
+CI_BUDGET_MINUTES = "10"
+CI_BUDGET_MODE = "report" # status only; use "cancel" to also request cancellation
+```
+
+Leave `CI_BUDGET_MINUTES` absent (or empty) to disable the feature. Existing
+deployments keep their review-only behavior. The default enabled mode is
+`report`; cancellation always requires the explicit `cancel` mode. There are no
+repository overrides: settings are deployment-wide, like the existing review
+policy, so each installed repository follows the same limit.
+
+Before enabling, grant **Actions: Read-only** for reporting, or **Actions: Read
+and write** for cancellation, retain **Commit statuses: Read and write**, and
+subscribe to **Workflow run** as described above. **The owner of each existing
+installation must approve the new permissions**; changing the App's settings
+alone is not enough. The Worker checks the permissions on the installation
+token, including for public repositories where successful reads alone do not
+prove permission approval. A cached token may take up to an hour to refresh
+after approval.
+
+The separate `review-gate/ci-budget` commit status links to the workflow attempt
+on its `head_sha`. It is proactively green while no breach is known, including
+while workflows are queued or running, and turns red when a workflow exceeds
+the budget. Normal completed runs therefore reach success. Require this context
+in branch protection **alongside your actual CI checks**, not instead of them:
+budget success does not mean CI is finished or tests passed. A reported breach
+stays failed on that SHA, even if another workflow or a rerun is shorter. Fix the
+excess in a new commit rather than rerunning the same SHA to erase the finding.
+Repositories/branches with no Actions run receive no budget status; do not
+require the context there. Enabling the feature does not backfill old runs.
+
+The budget measures **workflow-attempt wall time**, from the first executed
+job's `started_at` to the last executed job's `completed_at` (or now while the
+workflow is active). Initial runner queue time and skipped jobs do not count;
+once execution starts, dependency gaps between jobs count as pipeline wall time.
+Parallel jobs are not added together, and rerun attempts have their own clocks.
+Never-started cancelled jobs are also excluded. Job timestamps avoid treating
+the run's mutable `updated_at` as completion time.
+This is a duration limit, not a calculation of billed, rounded runner minutes.
+
+Signed workflow webhooks enqueue attempts in the existing `PENDING_REVIEWS` KV
+namespace. The scheduled sweep checks due attempts before the review sweeps,
+using its own `SWEEP_MAX_CI_RUNS` cap (default `2`). Once the first sweep discovers
+the execution start, it schedules the next API check for the deadline. Completed
+webhooks report promptly; scheduled live reads settle queue entries. Verified
+active records renew their retention of budget duration plus 24 hours. Failed
+reads preserve the previous expiry, so removed installations cannot accumulate
+forever. Accepted-cancel receipts use the same retention window. After an outage
+outlasts retention, redeliver the workflow event to restore tracking.
+
+**Timing is best-effort, not a hard ten-minute kill switch.** With the default
+three-minute cron, a due run is normally checked on the next sweep; KV
+propagation, capped backlogs, GitHub outages, and cooperative cancellation can
+add delay. A cancellation request is not proof the runner has stopped. Operators
+can choose a one-minute cron and size the sweep cap for their workload; both
+increase API/KV use. `limited` summaries warn when the cap delays work. Keep
+workflow-native timeout controls when an exact runner stop bound is required.
+
+Unknown/invalid settings disable budgeting and log a configuration error.
+Missing Actions read permission, missing KV, incomplete timing, or API failures
+remain visible in logs and never trigger cancellation. `cancel` with only
+Actions read permission still reports breaches but logs that cancellation needs
+approved Actions write access. Cancellation also requires approved Commit
+statuses write permission, even if the breach status was already present. The
+Worker rechecks the live run and attempt before requesting ordinary cancellation;
+it never force-cancels or intentionally
+cancels a newer rerun. Accepted requests are remembered in KV to avoid repeated
+cancellation on redelivery; KV is eventually consistent, so overlapping workers
+cannot promise exactly-once API delivery. No App settings or branch rules are
+changed by the feature.
+
 ## Configuration
 
 Non-secret settings live in `wrangler.toml`. Tweak them here if you want to use a
@@ -242,6 +327,10 @@ different reviewer bot or change the trigger text.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `STATUS_CONTEXT` | `review-gate/codex-clean` | The commit status name to write. |
+| `CI_BUDGET_MINUTES` | absent (disabled) | Positive decimal minutes, at whole-millisecond precision. One limit for all installed repositories. |
+| `CI_BUDGET_MODE` | `report` | `report` writes status only; `cancel` also requests cancellation after a breach if Actions write is approved. Other values disable budgeting. |
+| `CI_BUDGET_STATUS_CONTEXT` | `review-gate/ci-budget` | Separate budget status context; must be nonempty and different from `STATUS_CONTEXT`. |
+| `SWEEP_MAX_CI_RUNS` | `2` | Positive integer cap on due workflow attempts evaluated per sweep, separate from both review budgets. |
 | `REVIEW_BOT_LOGINS` | `chatgpt-codex-connector,chatgpt-codex-connector[bot]` | Bot logins whose clean pass counts (comma-separated). |
 | `CLEAN_REVIEW_TEXT` | `Codex Review: Didn't find any major issues.` | Text that marks a clean review pass. |
 | `CLEAN_REACTION_CONTENT` | `+1` | PR body reaction that marks a clean review pass. |
@@ -278,6 +367,12 @@ operations per month for a one-page queue. Cursor pagination is capped at ten
 pages, so the implementation ceiling is about 144,000 list operations per
 month, still below the Workers Paid included allowance. Queue records are stored
 in KV metadata, so the sweep does not need a separate KV read per PR.
+
+Enabled CI budgeting adds a separate KV list traversal (up to ten 1,000-key
+pages per sweep), plus run/job/status reads only for due attempts within its
+cap. Job inspection is capped at 1,000 jobs per attempt and status inspection at
+1,000 statuses per SHA. Incomplete or oversized histories log an error and stay
+retryable rather than silently passing or cancelling from partial evidence.
 
 ## Architecture and decisions
 
@@ -342,6 +437,7 @@ Files worth knowing when you poke around:
   filtering.
 - `src/github.js` - GitHub App auth, installation token caching, GitHub API calls.
 - `src/index.js` - the Cloudflare Worker entrypoint.
+- `src/ci-budget.js` - optional Actions duration policy, queue, and enforcement.
 - `test/` - `node --test` unit tests.
 
 ## A word on security
