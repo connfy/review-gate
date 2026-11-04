@@ -112,3 +112,30 @@ test("empty page-one traversal stays empty", async () => {
   assert.deepEqual(pulls, []);
   assert.deepEqual(requestedPages, [1]);
 });
+
+test("latest status lookup stops after the newest case-insensitive context match", async (context) => {
+  const requestedPages = [];
+  const newest = { context: "REVIEW-GATE/CODEX-CLEAN", state: "success", creator: { id: 456 } };
+  const older = { context: "review-gate/codex-clean", state: "success", creator: { id: 123 } };
+  context.mock.method(globalThis, "fetch", async (url) => {
+    const page = Number(new URL(url).searchParams.get("page"));
+    requestedPages.push(page);
+    const unrelated = Array.from({ length: 100 }, () => ({ context: "other-context" }));
+    return Response.json(page === 1 ? unrelated : [newest, older, ...unrelated.slice(2)]);
+  });
+  const client = new RepoClient("token", "owner", "repo", "review-gate/codex-clean");
+  assert.deepEqual(await client.latestStatusForContext("head"), newest);
+  assert.deepEqual(requestedPages, [1, 2]);
+});
+
+test("latest status lookup does not read older pages when the first page matches", async (context) => {
+  const paths = [];
+  const newest = { context: "review-gate/codex-clean", state: "pending", creator: { id: 123 } };
+  context.mock.method(globalThis, "fetch", async (url) => {
+    paths.push(url);
+    return Response.json([newest, ...Array.from({ length: 99 }, () => ({ context: "other" }))]);
+  });
+  const client = new RepoClient("token", "owner", "repo", "review-gate/codex-clean");
+  assert.deepEqual(await client.latestStatusForContext("head"), newest);
+  assert.equal(paths.length, 1);
+});

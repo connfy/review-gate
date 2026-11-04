@@ -12,6 +12,7 @@ import {
   resolveConfig,
 } from "./gate.js";
 import {
+  getCachedAppBotId,
   getCachedInstallationToken,
   listAppInstallations,
   listInstallationRepositories,
@@ -214,29 +215,85 @@ export function eventMayCreateSettledDisposition(eventName, payload, config) {
   );
 }
 
-export async function reportStatus(client, result) {
+async function reportStatusOutcome(client, result, { getOwnActorId } = {}) {
+  let currentStatus = null;
+  let ownActorId;
+  if (getOwnActorId) {
+    try {
+      currentStatus = await client.latestStatusForContext(result.sha);
+      if (
+        Number.isSafeInteger(currentStatus?.creator?.id) &&
+        currentStatus.creator.id > 0 &&
+        sameStatusContent(currentStatus, result)
+      ) {
+        ownActorId = await getOwnActorId();
+      }
+    } catch (error) {
+      // These reads only avoid redundant writes. They must never hide a gate
+      // result or prevent the live success check below.
+      console.error(
+        "review status deduplication read failed; publishing conservatively:",
+        error,
+      );
+    }
+  }
+
   if (result.state === "success") {
     const livePr = await client.pullRequest(result.prNumber);
     const liveSha = String(livePr?.head?.sha ?? "");
     const liveBaseSha = String(livePr?.base?.sha ?? "");
     if (liveSha !== result.sha) {
-      return false;
+      return { published: false, updated: false };
     }
     if (liveBaseSha !== result.baseSha) {
       await client.setStatus(result.sha, {
         state: "failure",
         description: "Pull request changed during evaluation; retry required.",
       });
-      return false;
+      return { published: false, updated: true };
     }
   }
 
+  if (!shouldReportStatus(currentStatus, result, ownActorId)) {
+    return { published: false, updated: false };
+  }
   await client.setStatus(result.sha, {
     state: result.state,
     description: result.description,
     targetUrl: result.targetUrl,
   });
-  return true;
+  return { published: true, updated: true };
+}
+
+export async function reportStatus(client, result, options = {}) {
+  return (await reportStatusOutcome(client, result, options)).published;
+}
+
+function reportOptionsFor(env, client, options = {}) {
+  return {
+    getOwnActorId:
+      options.getOwnActorId ??
+      (() =>
+        getCachedAppBotId(
+          env.GITHUB_APP_ID,
+          env.GITHUB_APP_PRIVATE_KEY,
+          client.token,
+        )),
+  };
+}
+
+async function reportSweepStatus(env, client, result, options) {
+  // An explicit publisher owns its write decision. The default shares the full
+  // outcome, including writes of the mandatory changed-PR failure.
+  if (options.reportStatus) {
+    const published = await options.reportStatus(client, result);
+    return { updated: published !== false };
+  }
+  return reportStatusOutcome(
+    client,
+    result,
+    reportOptionsFor(env, client, options),
+  );
 }
 
 async function trackPendingReviewSafely(env, ref, result) {
@@ -257,17 +314,23 @@ async function trackPendingReviewSafely(env, ref, result) {
   }
 }
 
-export function shouldReportStatus(currentStatus, result) {
-  if (!currentStatus) {
-    return true;
-  }
-  return (
-    String(currentStatus.state ?? "") !== result.state ||
-    String(currentStatus.description ?? "") !== result.description ||
-    Boolean(
-      result.targetUrl &&
-        String(currentStatus.target_url ?? "") !== result.targetUrl,
-    )
+function sameStatusContent(currentStatus, result) {
+  return Boolean(
+    currentStatus &&
+      String(currentStatus.state ?? "") === result.state &&
+      String(currentStatus.description ?? "") === result.description.slice(0, 140) &&
+      String(currentStatus.target_url ?? "") === String(result.targetUrl ?? ""),
+  );
+}
+
+export function shouldReportStatus(currentStatus, result, ownActorId) {
+  // Matching text is insufficient: another publisher must not impersonate the
+  // authenticated App, and incomplete provenance cannot authorize suppression.
+  return !(
+    Number.isSafeInteger(ownActorId) &&
+    ownActorId > 0 &&
+    currentStatus?.creator?.id === ownActorId &&
+    sameStatusContent(currentStatus, result)
   );
 }
 
@@ -278,6 +341,8 @@ async function evaluateAndReport(env, ref, config, options = {}) {
     ref.installationId,
   );
   const client = new RepoClient(token, ref.owner, ref.repo, config.statusContext);
+  const report = (result) =>
+    reportStatus(client, result, reportOptionsFor(env, client));
 
   let result = await evaluateFromGitHub(client, ref, config);
 
@@ -286,13 +351,13 @@ async function evaluateAndReport(env, ref, config, options = {}) {
     result = await evaluateFromGitHub(client, ref, config);
   }
 
-  await reportStatus(client, result);
+  await report(result);
 
   result = await maybeRetryReviewStart({
     result,
     retryOnReviewStart: options.retryOnReviewStart,
     evaluate: () => evaluateFromGitHub(client, ref, config),
-    report: (retryResult) => reportStatus(client, retryResult),
+    report,
     sleepFn: options.sleepFn ?? sleep,
     reviewStartRetryDelayMs:
       options.reviewStartRetryDelayMs ?? REVIEW_START_RETRY_DELAY_MS,
@@ -391,7 +456,6 @@ export async function sweepPendingPullRequests(env, config, options = {}) {
     ((token, owner, repo) =>
       new RepoClient(token, owner, repo, config.statusContext));
   const evaluate = options.evaluate ?? evaluateFromGitHub;
-  const report = options.reportStatus ?? reportStatus;
   const summary = {
     enabled: Boolean(env.PENDING_REVIEWS?.list),
     queued: 0,
@@ -454,9 +518,8 @@ export async function sweepPendingPullRequests(env, config, options = {}) {
       );
       const client = clientFor(token, owner, repo);
       const result = await evaluate(client, { prNumber }, config);
-      const currentStatus = await client.latestStatusForContext(result.sha);
-      if (shouldReportStatus(currentStatus, result)) {
-        await report(client, result);
+      const outcome = await reportSweepStatus(env, client, result, options);
+      if (outcome.updated) {
         summary.updated += 1;
       } else {
         summary.unchanged += 1;
@@ -523,7 +586,6 @@ export async function sweepOpenPullRequests(env, config, options = {}) {
     ((token, owner, repo) =>
       new RepoClient(token, owner, repo, config.statusContext));
   const evaluate = options.evaluate ?? evaluateFromGitHub;
-  const report = options.reportStatus ?? reportStatus;
 
   const installations = rotateList(
     await listInstallations(
@@ -686,9 +748,8 @@ export async function sweepOpenPullRequests(env, config, options = {}) {
           { prNumber: Number(pull.number) },
           config,
         );
-        const currentStatus = await client.latestStatusForContext(result.sha);
-        if (shouldReportStatus(currentStatus, result)) {
-          await report(client, result);
+        const outcome = await reportSweepStatus(env, client, result, options);
+        if (outcome.updated) {
           summary.updated += 1;
         } else {
           summary.unchanged += 1;
@@ -778,6 +839,8 @@ export async function maybeRetryReviewStart({
     await sleepFn(reviewStartRetryDelayMs);
     const retryResult = await evaluate();
     if (retryResult.sha === current.sha) {
+      // Publication also checks the audit link and creator, which can change
+      // between retries even when the evaluated state and text are identical.
       await report(retryResult);
       current = retryResult;
     }
@@ -786,7 +849,8 @@ export async function maybeRetryReviewStart({
   // GitHub does not send a standalone webhook when the bot adds a PR body
   // reaction. Scheduled sweeps are the durable path for late reactions; this
   // optional loop is only for installations that explicitly enable short
-  // webhook-bound re-checks.
+  // webhook-bound re-checks. The publisher owns all duplicate decisions,
+  // including audit-link or creator changes between identical gate results.
   for (
     let attempt = 0;
     current.state === "pending" &&
@@ -797,12 +861,7 @@ export async function maybeRetryReviewStart({
     await sleepFn(reviewPendingRetryIntervalMs);
     const retryResult = await evaluate();
     if (retryResult.sha === current.sha) {
-      if (
-        retryResult.state !== current.state ||
-        retryResult.description !== current.description
-      ) {
-        await report(retryResult);
-      }
+      await report(retryResult);
       current = retryResult;
     }
   }

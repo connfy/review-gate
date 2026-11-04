@@ -8,6 +8,7 @@ const TOKEN_REFRESH_SKEW_MS = 60_000;
 
 let privateKeyCache = null;
 const installationTokenCache = new Map();
+let appBotIdentityCache = null;
 
 // GitHub treats commit status contexts as case-insensitive identities.
 export function normalizeStatusContext(context) {
@@ -126,7 +127,7 @@ async function githubFetch(token, method, path, options = {}) {
 async function githubPaginate(
   token,
   path,
-  { accept, limit = Infinity, pageOffset = 0, pageCursor = pageOffset } = {},
+  { accept, limit = Infinity, pageOffset = 0, pageCursor = pageOffset, stopWhen } = {},
 ) {
   if (Number.isFinite(limit) && limit <= 0) {
     return [];
@@ -170,7 +171,7 @@ async function githubPaginate(
       continue;
     }
     out.push(...rows.slice(0, limit - out.length));
-    if (out.length >= limit || rows.length < perPage) {
+    if (out.length >= limit || rows.length < perPage || (stopWhen && rows.some(stopWhen))) {
       return out;
     }
     page += 1;
@@ -202,6 +203,52 @@ export async function getCachedInstallationToken(
     installationId,
   );
   return access.token;
+}
+
+// A bot's numeric actor ID survives App renames. Keep one App-ID-keyed entry
+// per isolate, coalescing concurrent lookups without retaining failed requests.
+export async function getCachedAppBotId(appId, privateKeyPem, installationToken) {
+  const cacheKey = String(appId);
+  if (appBotIdentityCache?.appId === cacheKey) {
+    return appBotIdentityCache.promise;
+  }
+
+  const entry = { appId: cacheKey };
+  entry.promise = (async () => {
+    const jwt = await createAppJwt(appId, privateKeyPem);
+    const app = await githubFetch(jwt, "GET", "/app");
+    if (
+      String(app?.id ?? "") !== cacheKey ||
+      typeof app?.slug !== "string" ||
+      app.slug.length === 0
+    ) {
+      throw new Error("authenticated GitHub App identity is incomplete or mismatched");
+    }
+    const login = `${app.slug}[bot]`;
+    const bot = await githubFetch(
+      installationToken,
+      "GET",
+      `/users/${encodeURIComponent(login)}`,
+    );
+    if (
+      !Number.isSafeInteger(bot?.id) ||
+      bot.id <= 0 ||
+      bot.type !== "Bot" ||
+      String(bot.login ?? "").toLowerCase() !== login.toLowerCase()
+    ) {
+      throw new Error("authenticated GitHub App bot identity is incomplete or mismatched");
+    }
+    return bot.id;
+  })();
+  appBotIdentityCache = entry;
+  try {
+    return await entry.promise;
+  } catch (error) {
+    if (appBotIdentityCache === entry) {
+      appBotIdentityCache = null;
+    }
+    throw error;
+  }
 }
 
 // Keep GitHub's granted permissions with the token. Public Actions reads alone
@@ -467,20 +514,27 @@ export class RepoClient {
   }
 
   async latestStatusForContext(sha) {
-    const statuses = await this.statusesForContext(sha);
+    const statuses = await this.statusesForContext(sha, { latestOnly: true });
     return statuses[0] ?? null;
   }
 
-  async statusesForContext(sha, { requireComplete = false } = {}) {
+  async statusesForContext(sha, { requireComplete = false, latestOnly = false } = {}) {
+    const context = normalizeStatusContext(this.statusContext);
     const statuses = await githubPaginate(
       this.token,
       `/repos/${this.owner}/${this.repo}/commits/${sha}/statuses`,
-      { limit: requireComplete ? 1001 : 1000 },
+      {
+        limit: requireComplete ? 1001 : 1000,
+        // Statuses are newest first. Once this context appears, older pages
+        // cannot affect the latest-status comparison; full history stays intact.
+        stopWhen: latestOnly && !requireComplete
+          ? (status) => normalizeStatusContext(status?.context) === context
+          : undefined,
+      },
     );
     if (requireComplete && statuses.length > 1000) {
       throw new Error("commit status history exceeds the 1,000-status inspection cap");
     }
-    const context = normalizeStatusContext(this.statusContext);
     return statuses.filter(
       (status) => normalizeStatusContext(status?.context) === context,
     );

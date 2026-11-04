@@ -70,7 +70,7 @@ this exact issue comment:
 ```
 
 The anchor, review, and disposition must have strictly increasing timestamps.
-PR body text does not count. A later review request, head change, or base change
+PR body text does not count. A later review request, head change, or recorded PR `base.sha` change
 invalidates the signal, and the existing unresolved-thread and
 review-in-progress checks still apply. The status names the human and
 abbreviated head/base pair and links to the command comment.
@@ -78,8 +78,9 @@ abbreviated head/base pair and links to the command comment.
 When a merged PR advances its base branch, the subscribed `pull_request` close
 event immediately re-evaluates the other open PRs targeting that base ref. A
 direct push to the base has no subscribed event, so it remains covered by the
-rotating scheduled fallback and is invalidated when that fallback selects the
-affected PR.
+rotating scheduled fallback. Re-evaluation reads the PR's recorded base snapshot,
+which may remain unchanged after a live base advance; invalidation assumes the
+update push enforced by strict up-to-date checks.
 
 While the review is running, Review Gate reports `pending` when the configured
 bot leaves an `eyes` reaction on the PR body or on the latest review request
@@ -113,6 +114,30 @@ Workers KV and checked first, so a late PR-body `+1` can flip the status to gree
 on a priority sweep even when no comment/review webhook follows. A rotating scan
 of other open PRs remains as a fallback for signals that never entered the
 pending state.
+
+Webhook deliveries, their retries, same-base sibling evaluations, and scheduled
+sweeps share one status publisher. It skips an unchanged state, description,
+and target link only when the latest status in that context belongs to this
+authenticated GitHub App. Context matching ignores case. A different or unknown
+creator is overwritten even when the text matches, and changing or removing a
+settled-disposition audit link still publishes a status. The App's numeric bot
+identity comes from authenticated `GET /app` and its bot user lookup; no new
+setting or App permission is required. Failed comparison or identity reads log
+an error and fall back to publication.
+
+Success still checks the live head and base before either publishing or
+skipping a duplicate. A head change abstains; a base change writes the required
+"Pull request changed during evaluation; retry required." failure. Pending
+tracking and retries continue when a duplicate write is skipped. Each real
+status write emits GitHub's `status` event; an unchanged evaluation emits none.
+Consumers must recover a lost or failed workflow through their rerun or
+`workflow_dispatch` procedure. Redelivering a webhook does not force another
+unchanged status event. See [ADR 0006](docs/decisions/0006-deduplicate-review-status.md).
+
+A sibling's duplicate status is not a base-advance validation guarantee. The
+inspected consumer workflows use the PR's recorded `base.sha`; another status
+does not refresh it. Enforced strict up-to-date checks must require the update
+push. Without strict mode, the existing stale-base gap remains.
 
 ## Setup (quicker than it looks)
 
