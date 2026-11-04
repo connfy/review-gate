@@ -39,15 +39,38 @@ goes `success`:
 
 - The PR is not a draft.
 - There are no unresolved current review threads.
-- A configured reviewer bot left a clean pass after the latest commit.
+- A configured reviewer bot left a clean pass for this head, or a verified base
+  sync preserves an explicitly reviewed ancestor as described below.
 
-A "clean pass" counts in any of three forms:
+A clean pass requires a configured Bot identity and a full reviewed head:
 
-- the bot left a PR timeline comment containing the clean-review text, or
-- the bot left a PR review (with the clean text) whose `commit_id` matches the
-  current head SHA, or
-- the bot left a `+1` reaction on the PR body after the latest head update and
-  latest review request.
+- a non-dismissed clean formal review whose full `commit_id` is this head;
+- a separate clean comment using `**Reviewed commit:**` followed by the full
+  SHA in backticks; or
+- a clean comment or PR-body `+1` bound to this full SHA by the same numeric
+  Bot actor's completed, clean `codex-review-state:v1` summary metadata.
+
+An abbreviated label is only cross-checked against that full metadata; it is
+never resolved as a Git branch/tag name. A non-clean formal review followed by
+an unbound `+1` cannot prove which head passed. The summary alone never supplies
+a clean signal or ends the requested-review wait (ADR 0002).
+GitHub can label a Bot's reaction as `User`; its numeric ID must match the
+configured Bot summary author. Reaction account type cannot establish identity.
+
+Newer requests, ready/force/restoration events, findings and in-progress signals
+invalidate older evidence using server timestamps. Git author/committer dates
+and timeline position cannot prove clean completion. This closes stale `+1`
+reuse after a backdated commit, regardless of whether base-sync carry is enabled.
+Missing or conflicting evidence fails closed; an independently valid full-SHA
+source remains usable. See [ADR 0005](docs/decisions/0005-carry-clean-review-across-base-sync.md)
+for the binding protocol and conservative timestamp rule.
+
+A metadata-bound reaction is a clean signal's presence and freshness cap; it
+does not prove that a new review ran. Only the matching full-head completed
+Code Review state proves coverage. Missing binding with a surviving `eyes`
+stays pending during `REVIEW_START_WINDOW_MS`, then becomes a diagnostic failure,
+never a completed review. A known running Code Review remains pending. Malformed
+state emits one reason-coded warning per evaluation without comment bodies.
 
 An optional settled disposition can close reviewed findings without another
 review of the unchanged head/base pair. The round anchor depends on how the
@@ -70,16 +93,67 @@ this exact issue comment:
 ```
 
 The anchor, review, and disposition must have strictly increasing timestamps.
-PR body text does not count. A later review request, head change, or base change
-invalidates the signal, and the existing unresolved-thread and
-review-in-progress checks still apply. The status names the human and
+PR body text does not count. A later review request, head change, or change to
+the recorded PR `base.sha` invalidates the signal, and the unresolved-thread and
+review-in-progress checks still apply. A known running Code Review blocks
+settlement, and later same-head non-clean state invalidates an older attestation.
+The status names the human and
 abbreviated head/base pair and links to the command comment.
 
 When a merged PR advances its base branch, the subscribed `pull_request` close
-event immediately re-evaluates the other open PRs targeting that base ref. A
-direct push to the base has no subscribed event, so it remains covered by the
-rotating scheduled fallback and is invalidated when that fallback selects the
-affected PR.
+event immediately re-evaluates other open PRs targeting that base ref. Direct
+base pushes are covered by the rotating scheduled fallback. Re-evaluation
+re-reads the PR's recorded `base.sha`; it does not turn that snapshot into the
+live branch tip. Settlement invalidation after a live base advance assumes
+enforced strict up-to-date required checks: their required update push refreshes
+the snapshot. Without strict mode, a base advance alone can leave a settlement
+valid. See [the architecture](docs/architecture.md#base-snapshots-and-merge-protection).
+
+### Verified base sync
+
+This feature is **off by default**. The owner can enable it with
+`BASE_SYNC_REVIEW_ENABLED=true` after updating consumer review rules and
+confirming Contents read access. Disabled carry performs no Git graph/tree
+proof reads. Direct metadata binding uses existing review/comment reads.
+
+A two-parent merge of the base branch can retain the clean review of its
+original PR parent R. Every side parent must belong to the live base history;
+base and PR changes must touch disjoint files; complete file patches and Git
+trees must prove that the PR's paths, content, modes, and rename metadata are
+unchanged. A chain is checked against the original directly reviewed R at
+every merge, never against a previous carried status. Each integrated base
+must retain the preceding sync's base history; backward/divergent chains are
+refused. Its success says:
+
+`Review gate passed: base sync of reviewed head <full-R-sha> onto <full-M-sha>.`
+
+The status links to R's completed review/receipt or a reaction's binding summary.
+The full-head clean sources above can establish R; a bare reaction, unbound
+comment, settled disposition, or previous carried status cannot. New commits, rebases, force pushes, overlapping files, conflict edits,
+binary/missing/truncated patches, incomplete trees, or API errors require the
+ordinary direct-review path. Drafts, threads, requested or ongoing reviews
+still block. Unrelated base binaries are preserved by exact tree identity.
+Required CI still validates the integrated result; this proof preserves reviewed
+changes rather than proving semantic compatibility with the base.
+
+Review inputs are refreshed after collecting the Git proof; publication then
+rechecks PR identity and the live base ref. Closing a PR alone does not invalidate
+its immutable review coverage. Explicit results for heads outside R→N cannot
+retract coverage; results for R, intermediate syncs, N, and unknown heads remain
+subject to the existing blockers.
+
+Optional Git proof reads require Contents read on private repositories, with
+any needed App permission and installation consent approved by the owner before
+activation. Direct summary binding needs no additional permission. No App settings,
+consumer repository, deployment, or KV schema is changed by this implementation.
+See [ADR 0005](docs/decisions/0005-carry-clean-review-across-base-sync.md) for the
+precise proof, failure cases, and consumer-policy text changes.
+
+On deployment, older abbreviated receipts without versioned full-head metadata
+need a fresh review unless an independent valid full-SHA clean source exists.
+This direct-authority hardening applies even with carry disabled. Recorded
+manual requests produced receipts (PRs #12/#14); automatic ready produced only
+the summary and `+1` (PR #13). These are observed paths, not lifecycle guarantees.
 
 While the review is running, Review Gate reports `pending` when the configured
 bot leaves an `eyes` reaction on the PR body or on the latest review request
@@ -91,8 +165,8 @@ A review that was requested for the latest head is also `pending`, not
 `failure`, until the bot responds. The request can be opening the PR, marking a
 draft ready, or a review-request comment. The wait lasts at most
 `REVIEW_START_WINDOW_MS`, 20 minutes by default, and then the status becomes a
-failure. The bot's live summary comment, which Codex creates when a review
-starts and edits in place, never counts as the bot's response:
+failure. The bot's live summary can first appear at review start or after
+completion and be edited in place; it never counts as the bot's response:
 
 `Review requested for the latest head; waiting for the review bot.`
 
@@ -131,6 +205,7 @@ Give it these **Repository permissions**:
 | Commit statuses | Read and write | To write the review status and optional CI budget status onto commit SHAs. |
 | Pull requests | Read-only | To read PR state, reviews, inline comments, and review threads. |
 | Issues | Read-only | To receive PR timeline comments and read PR body reactions. GitHub models PR comments and PR bodies as issues internally. |
+| Contents (optional base-sync carry) | Read-only | To read refs, comparisons, commits, and complete trees for the enabled proof. Direct review binding does not need this additional permission. |
 | Actions (optional CI budget) | Read-only for `report`; Read and write for `cancel` | To inspect workflow attempts and job timing; write is required to cancel a run. |
 
 Subscribe it to these five events:
@@ -223,10 +298,9 @@ If you use Codex, you usually summon a review like this:
 @codex review
 ```
 
-Shortly after the bot leaves a clean-pass comment, after a later webhook causes
-Review Gate to observe the bot's PR body `+1`, or after one of the
-scheduled sweeps sees that `+1`, the Worker recomputes the PR and flips the
-status to green. If the bot has only acknowledged the review with `eyes`, the
+After the bot supplies a full-head clean source, a comment/review webhook or
+scheduled sweep recomputes the gate. A PR-body `+1` needs matching completed
+clean Code Review metadata; observing the reaction alone cannot turn it green. If the bot has only acknowledged the review with `eyes`, the
 status becomes pending instead.
 
 ## Soft gate, or lock it down?
@@ -360,17 +434,18 @@ different reviewer bot or change the trigger text.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `STATUS_CONTEXT` | `review-gate/codex-clean` | The commit status name to write. |
+| `BASE_SYNC_REVIEW_ENABLED` | absent/false (disabled) | Only explicit `true` enables verified base-sync carry. Private Git proof needs owner-approved Contents read; direct review hardening always applies. |
 | `CI_BUDGET_MINUTES` | absent (disabled) | Positive decimal minutes, at whole-millisecond precision. One limit for all installed repositories. |
 | `CI_BUDGET_MODE` | `report` | `report` writes status only; `cancel` also requests cancellation after a breach if Actions write is approved. Other values disable budgeting. |
 | `CI_BUDGET_STATUS_CONTEXT` | `review-gate/ci-budget` | Separate budget status context; must be nonempty and different from the effective `STATUS_CONTEXT`, ignoring case. A collision disables budgeting and logs an error. If several deployments budget the same repository, give each its own context. |
 | `SWEEP_MAX_CI_RUNS` | `2` | Positive integer cap on due workflow attempts evaluated per sweep, separate from both review budgets. |
-| `REVIEW_BOT_LOGINS` | `chatgpt-codex-connector,chatgpt-codex-connector[bot]` | Bot logins whose clean pass counts (comma-separated). |
-| `CLEAN_REVIEW_TEXT` | `Codex Review: Didn't find any major issues.` | Text that marks a clean review pass. |
-| `CLEAN_REACTION_CONTENT` | `+1` | PR body reaction that marks a clean review pass. |
+| `REVIEW_BOT_LOGINS` | `chatgpt-codex-connector,chatgpt-codex-connector[bot]` | Configured Bot logins (comma-separated); clean evidence also needs full-head binding. |
+| `CLEAN_REVIEW_TEXT` | `Codex Review: Didn't find any major issues.` | Clean marker in a full-SHA review/receipt or a separately metadata-bound comment. |
+| `CLEAN_REACTION_CONTENT` | `+1` | PR-body clean signal; requires same-actor completed clean full-head Code Review metadata. |
 | `REVIEW_IN_PROGRESS_REACTION_CONTENT` | `eyes` | Reaction that marks the latest head as currently under review. |
 | `REVIEW_REQUEST_TEXT` | `@codex review` | Comment text that marks the latest review request boundary for reaction freshness. |
-| `REVIEW_STATUS_BOARD_MARKER` | `<!-- codex-pull-request-review-summary -->` | Marker of the bot's live summary comment, which is never treated as a review response. |
-| `REVIEW_START_WINDOW_MS` | `1200000` | How long a review requested for the latest head stays `pending` without a bot response. |
+| `REVIEW_STATUS_BOARD_MARKER` | `<!-- codex-pull-request-review-summary -->` | Live summary marker; its versioned metadata can bind a separate signal, but it is never a response itself. |
+| `REVIEW_START_WINDOW_MS` | `1200000` | Pending wait without a response; also bounds verification of an unbound result with surviving `eyes`. Expiry never proves completion. |
 | `SETTLED_DISPOSITION_LOGINS` | empty (disabled) | Human GitHub logins allowed to attest exact head/base settled dispositions (comma-separated). |
 | `REVIEW_START_RETRY_DELAY_MS` | `15000` | Delay before re-checking a PR-open/review-request event for late `eyes`. |
 | `REVIEW_PENDING_RETRY_INTERVAL_MS` | `7000` | Delay between optional webhook-bound re-checks while the latest review is pending. |
@@ -444,15 +519,16 @@ Secrets are stored separately in Cloudflare via `wrangler secret put`:
 
 ### Codex says clean, but the status stays failed
 
-- Was the clean-pass comment posted *after* the latest head commit? Anything
-  before it doesn't count.
-- If you rely on the PR body `+1`, was the reaction created after both the latest
-  head update and the latest `@codex review` request?
+- Does a full-SHA clean review/comment name the current head, or does a separate
+  clean signal have matching completed full-head summary metadata?
+- For a `+1` or abbreviated receipt, is the summary Code Review completed and
+  clean, from the same numeric Bot actor, with no newer request or active review?
+  A bare reaction and Git commit dates cannot supply that binding.
 - If the bot is still reviewing, does the PR body or latest review-request
   comment have a fresh `eyes` reaction from the configured bot? That should show
   as pending, not failed.
-- If the bot only uses a PR-body `+1`, wait for the next scheduled sweep.
-  GitHub does not emit a separate webhook for that reaction.
+- If the bot uses a PR-body `+1` with matching completed clean full-head
+  metadata, wait for the next scheduled sweep. GitHub sends no reaction webhook.
 - Are there still unresolved review threads?
 - Under **Advanced > Recent deliveries** in the App settings, is there an
   `issue_comment` delivery at the time of that comment?

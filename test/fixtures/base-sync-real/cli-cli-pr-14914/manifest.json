@@ -1,0 +1,296 @@
+{
+  "schemaVersion": 1,
+  "repository": "cli/cli",
+  "pullRequest": 14914,
+  "sourceUrl": "https://github.com/cli/cli/pull/14914",
+  "reviewedSha": "23ca8c45cd3f0f0320e0d2577eac64380fe9b530",
+  "headSha": "8aefc2564e7fa0d6aad62418fc491e266f193931",
+  "liveBaseSha": "eeb44bc432c0107de002dadd34a61b4e2bd15882",
+  "commits": {
+    "d6b82b12e67d108b7c82d76d943a3a47814acbc1": "raw/commit-B.json.gz",
+    "23ca8c45cd3f0f0320e0d2577eac64380fe9b530": "raw/commit-R.json.gz",
+    "c4513d446bf98cfcbe72ed83f17cd3220174d88f": "raw/commit-M.json.gz",
+    "8aefc2564e7fa0d6aad62418fc491e266f193931": "raw/commit-N.json.gz",
+    "eeb44bc432c0107de002dadd34a61b4e2bd15882": "raw/commit-L.json.gz"
+  },
+  "comparisons": {
+    "c4513d446bf98cfcbe72ed83f17cd3220174d88f...23ca8c45cd3f0f0320e0d2577eac64380fe9b530": "raw/compare-M-R.json.gz",
+    "c4513d446bf98cfcbe72ed83f17cd3220174d88f...8aefc2564e7fa0d6aad62418fc491e266f193931": "raw/compare-M-N.json.gz",
+    "c4513d446bf98cfcbe72ed83f17cd3220174d88f...eeb44bc432c0107de002dadd34a61b4e2bd15882": "raw/compare-M-L.json.gz"
+  },
+  "trees": {
+    "24b73a3b6188858154cb7c7e1a0eae6c0403bc6c": "raw/tree-B.json.gz",
+    "8109ced70f08114753165511c3921446ce294636": "raw/tree-R.json.gz",
+    "af456f01ff8f43761dc72e0fc4a369d8121f7491": "raw/tree-M.json.gz",
+    "2c4f8565b84efe497c0544bcf3806a2af519c673": "raw/tree-N.json.gz"
+  },
+  "metadata": {
+    "repository": "raw/repository.json.gz",
+    "pullRequest": "raw/pull-request.json.gz",
+    "liveBaseRef": "raw/base-ref.json.gz",
+    "mergeCommitOrigin": "raw/merge-commit-origin-page1.json.gz",
+    "upstreamLicense": "raw/upstream-license.json.gz"
+  },
+  "sources": [
+    {
+      "path": "raw/commit-B.json.gz",
+      "endpoint": "https://api.github.com/repos/cli/cli/git/commits/d6b82b12e67d108b7c82d76d943a3a47814acbc1",
+      "method": "GET",
+      "capturedAt": "2026-11-04T14:45:23.211401+00:00",
+      "apiVersion": "2022-11-28",
+      "rawBytes": 2628,
+      "rawSha256": "5afab30bbd844cb5cb76f5b1089e349e45d3dbba97f8cb55ef96175c2318cfa1",
+      "storedBytes": 1299,
+      "storedSha256": "4e5d1b4fb441124363cd82191199255fe71adfb9b4c2306e5492873cd42a1591",
+      "encoding": "gzip of the exact gh REST response bytes; no response fields edited"
+    },
+    {
+      "path": "raw/tree-B.json.gz",
+      "endpoint": "https://api.github.com/repos/cli/cli/git/trees/24b73a3b6188858154cb7c7e1a0eae6c0403bc6c?recursive=1",
+      "method": "GET",
+      "capturedAt": "2026-11-04T14:45:32.557005+00:00",
+      "apiVersion": "2022-11-28",
+      "rawBytes": 455161,
+      "rawSha256": "ac4b3aff199cde17c4396c6b745dd6b2bda8aedba5db39002843bce7709c6187",
+      "storedBytes": 78807,
+      "storedSha256": "d8019bab12e110aca44814c24c812c96f3f85e531a6bbfc04f6d835cb83bc3af",
+      "encoding": "gzip of the exact gh REST response bytes; no response fields edited"
+    },
+    {
+      "path": "raw/commit-R.json.gz",
+      "endpoint": "https://api.github.com/repos/cli/cli/git/commits/23ca8c45cd3f0f0320e0d2577eac64380fe9b530",
+      "method": "GET",
+      "capturedAt": "2026-11-04T14:44:42.647623+00:00",
+      "apiVersion": "2022-11-28",
+      "rawBytes": 1116,
+      "rawSha256": "d2f02e08135ae8c26733a9a61e05a6a69c9ded031a79c0e38e6aeead44547364",
+      "storedBytes": 507,
+      "storedSha256": "9e8bf38bcf950bdd8f4fb11ae9481a6013b411600ca1d3c879373dbad1d9fcc5",
+      "encoding": "gzip of the exact gh REST response bytes; no response fields edited"
+    },
+    {
+      "path": "raw/tree-R.json.gz",
+      "endpoint": "https://api.github.com/repos/cli/cli/git/trees/8109ced70f08114753165511c3921446ce294636?recursive=1",
+      "method": "GET",
+      "capturedAt": "2026-11-04T14:45:32.608245+00:00",
+      "apiVersion": "2022-11-28",
+      "rawBytes": 455161,
+      "rawSha256": "d578e0e57e05306a75cc1eaaef847faeffd4905ba4cd65ff76b4e2e2589baa51",
+      "storedBytes": 78814,
+      "storedSha256": "1072a6a12cabb8fa92863e7c88bc1e239ed9e50e668da3ae8a19eeebf0a5c1e9",
+      "encoding": "gzip of the exact gh REST response bytes; no response fields edited"
+    },
+    {
+      "path": "raw/commit-M.json.gz",
+      "endpoint": "https://api.github.com/repos/cli/cli/git/commits/c4513d446bf98cfcbe72ed83f17cd3220174d88f",
+      "method": "GET",
+      "capturedAt": "2026-11-04T14:44:43.100130+00:00",
+      "apiVersion": "2022-11-28",
+      "rawBytes": 2612,
+      "rawSha256": "1887fc835543850e39015276262706cbfc812d66637b204fab0f3d56a9d873ed",
+      "storedBytes": 1301,
+      "storedSha256": "709e6b13064aec93443174cfa467506a6989f7ca269c7896608b3590b6d04ee2",
+      "encoding": "gzip of the exact gh REST response bytes; no response fields edited"
+    },
+    {
+      "path": "raw/tree-M.json.gz",
+      "endpoint": "https://api.github.com/repos/cli/cli/git/trees/af456f01ff8f43761dc72e0fc4a369d8121f7491?recursive=1",
+      "method": "GET",
+      "capturedAt": "2026-11-04T14:45:32.808631+00:00",
+      "apiVersion": "2022-11-28",
+      "rawBytes": 469904,
+      "rawSha256": "9551a4400668daac7641b0ebade4845ac0d5e3409335c3ffd50a1a678dbd1738",
+      "storedBytes": 81379,
+      "storedSha256": "ffa99d1cbde37520596d70cf2500fcf431729a55f021d3f0d17f75943dc4f55d",
+      "encoding": "gzip of the exact gh REST response bytes; no response fields edited"
+    },
+    {
+      "path": "raw/commit-N.json.gz",
+      "endpoint": "https://api.github.com/repos/cli/cli/git/commits/8aefc2564e7fa0d6aad62418fc491e266f193931",
+      "method": "GET",
+      "capturedAt": "2026-11-04T14:44:42.652667+00:00",
+      "apiVersion": "2022-11-28",
+      "rawBytes": 2452,
+      "rawSha256": "3098c0d8a7c25f1f59cd89c0995d63e73d9b25b20aa3869a76226787cc50ac5c",
+      "storedBytes": 1256,
+      "storedSha256": "aefd45e615d277aacc9dfb693be052def4359ff7c838b7a23bfadf45e657ecfa",
+      "encoding": "gzip of the exact gh REST response bytes; no response fields edited"
+    },
+    {
+      "path": "raw/tree-N.json.gz",
+      "endpoint": "https://api.github.com/repos/cli/cli/git/trees/2c4f8565b84efe497c0544bcf3806a2af519c673?recursive=1",
+      "method": "GET",
+      "capturedAt": "2026-11-04T14:45:32.549608+00:00",
+      "apiVersion": "2022-11-28",
+      "rawBytes": 469904,
+      "rawSha256": "120f931c08e74379689c4fa2a441dd01c1fb65c4b99c402462ad67688390f3e2",
+      "storedBytes": 81375,
+      "storedSha256": "ca4695019a4c39f9775ff1ebcdf573c0b580a59437f8d9794514314e37e3e05b",
+      "encoding": "gzip of the exact gh REST response bytes; no response fields edited"
+    },
+    {
+      "path": "raw/compare-M-R.json.gz",
+      "endpoint": "https://api.github.com/repos/cli/cli/compare/c4513d446bf98cfcbe72ed83f17cd3220174d88f...23ca8c45cd3f0f0320e0d2577eac64380fe9b530?per_page=100&page=1",
+      "method": "GET",
+      "capturedAt": "2026-11-04T14:44:43.340431+00:00",
+      "apiVersion": "2022-11-28",
+      "rawBytes": 15503,
+      "rawSha256": "ecf7799d36af2079731a4bbbacc7f719bc2ab66d3b86e71967269d798fc296da",
+      "storedBytes": 4012,
+      "storedSha256": "fe9344230d80c759e99fb3603cbaf268568ba9174a3f00dd795df7479c69cd3b",
+      "encoding": "gzip of the exact gh REST response bytes; no response fields edited"
+    },
+    {
+      "path": "raw/compare-M-N.json.gz",
+      "endpoint": "https://api.github.com/repos/cli/cli/compare/c4513d446bf98cfcbe72ed83f17cd3220174d88f...8aefc2564e7fa0d6aad62418fc491e266f193931?per_page=100&page=1",
+      "method": "GET",
+      "capturedAt": "2026-11-04T14:44:43.731946+00:00",
+      "apiVersion": "2022-11-28",
+      "rawBytes": 20109,
+      "rawSha256": "ceb8feb0e635b9ff29135b1ca3841ff931f2c7aaf0b6fdf65697aa5be7af49b4",
+      "storedBytes": 3900,
+      "storedSha256": "3d12cc7f317461028d697eb5e26002a452c77349141d505fc18f3f679a27b700",
+      "encoding": "gzip of the exact gh REST response bytes; no response fields edited"
+    },
+    {
+      "path": "raw/compare-M-L.json.gz",
+      "endpoint": "https://api.github.com/repos/cli/cli/compare/c4513d446bf98cfcbe72ed83f17cd3220174d88f...eeb44bc432c0107de002dadd34a61b4e2bd15882?per_page=100&page=1",
+      "method": "GET",
+      "capturedAt": "2026-11-04T14:45:23.379682+00:00",
+      "apiVersion": "2022-11-28",
+      "rawBytes": 28844,
+      "rawSha256": "bb9b4ee626311abba15233a3e0391b5d6d4015161f546ffffd43920f74a88db2",
+      "storedBytes": 4812,
+      "storedSha256": "ae42e97e7714ef0aed155cc653e74a7eea0e63b1bd2dcefcfee6fbc2ce28f54c",
+      "encoding": "gzip of the exact gh REST response bytes; no response fields edited"
+    },
+    {
+      "path": "raw/repository.json.gz",
+      "endpoint": "https://api.github.com/repos/cli/cli",
+      "method": "GET",
+      "capturedAt": "2026-11-04T14:43:40.072230+00:00",
+      "apiVersion": "2022-11-28",
+      "rawBytes": 5772,
+      "rawSha256": "31cbcabd4717b663b01152e69f1ef52af1aef8732d5f0ea4342f043e274e7b8b",
+      "storedBytes": 1374,
+      "storedSha256": "243ab5db1f5d6a729c6e5b0f697db7afe7ef3e4f95efa24f824a3d1845799b55",
+      "encoding": "gzip of the exact gh REST response bytes; no response fields edited"
+    },
+    {
+      "path": "raw/pull-request.json.gz",
+      "endpoint": "https://api.github.com/repos/cli/cli/pulls/14914",
+      "method": "GET",
+      "capturedAt": "2026-11-04T14:44:43.211891+00:00",
+      "apiVersion": "2022-11-28",
+      "rawBytes": 18363,
+      "rawSha256": "a39ede50da8896ebf3aa1e5f3c332ee4072e2d1aadf077b047b72748fa2e8dc2",
+      "storedBytes": 3476,
+      "storedSha256": "94964d3f14406243f359a129ea02792d05552136433d769c2983e3abe14b3469",
+      "encoding": "gzip of the exact gh REST response bytes; no response fields edited"
+    },
+    {
+      "path": "raw/base-ref.json.gz",
+      "endpoint": "https://api.github.com/repos/cli/cli/git/ref/heads/trunk",
+      "method": "GET",
+      "capturedAt": "2026-11-04T14:44:42.640329+00:00",
+      "apiVersion": "2022-11-28",
+      "rawBytes": 323,
+      "rawSha256": "520d16dd551fd36426935bc2c08ef527c2efcf55f5a756b6b4b68fc83de11425",
+      "storedBytes": 208,
+      "storedSha256": "192118164bce76baf8b5c9e3507b2ff74f53ce64c1dcb6272d7f97de9e00c9b7",
+      "encoding": "gzip of the exact gh REST response bytes; no response fields edited"
+    },
+    {
+      "path": "raw/merge-commit-origin-page1.json.gz",
+      "endpoint": "https://api.github.com/repos/cli/cli/commits/8aefc2564e7fa0d6aad62418fc491e266f193931?per_page=1&page=1",
+      "method": "GET",
+      "capturedAt": "2026-11-04T14:47:08.166133+00:00",
+      "apiVersion": "2022-11-28",
+      "rawBytes": 10834,
+      "rawSha256": "be97b012eb4d6251e3365288c23ebb7aec09664e96aa11afeee77576603dd0ca",
+      "storedBytes": 3791,
+      "storedSha256": "be1f9c60a0717ca6713fd7e2fa155eda1f5fab691152f8b9c096e374ff654e96",
+      "encoding": "gzip of the exact gh REST response bytes; no response fields edited"
+    },
+    {
+      "path": "raw/upstream-license.json.gz",
+      "endpoint": "https://api.github.com/repos/cli/cli/contents/LICENSE?ref=c4513d446bf98cfcbe72ed83f17cd3220174d88f",
+      "method": "GET",
+      "capturedAt": "2026-11-04T14:45:24.088315+00:00",
+      "apiVersion": "2022-11-28",
+      "rawBytes": 2329,
+      "rawSha256": "f9a0e46d5f450f068653a59daccd04462f9ca564db4a7557c7c7737a6e3ee982",
+      "storedBytes": 1236,
+      "storedSha256": "a3132676ec0706f5192ad98adb8c1c77812d8f4e3ad38591173c9d2f38ce4912",
+      "encoding": "gzip of the exact gh REST response bytes; no response fields edited"
+    },
+    {
+      "path": "raw/commit-L.json.gz",
+      "endpoint": "https://api.github.com/repos/cli/cli/git/commits/eeb44bc432c0107de002dadd34a61b4e2bd15882",
+      "method": "GET",
+      "capturedAt": "2026-11-04T14:53:25.864246+00:00",
+      "apiVersion": "2022-11-28",
+      "rawBytes": 2614,
+      "rawSha256": "5c6386ce4cb319dfbb53d1dae15c99d0d2323e1088cfe8f279381b44483a4a5f",
+      "storedBytes": 1314,
+      "storedSha256": "8b31a62aa72b5a9c620fa9c56706d75efd8f7a7406bade2d04ae6775d336fe15",
+      "encoding": "gzip of the exact gh REST response bytes; no response fields edited"
+    }
+  ],
+  "qualification": {
+    "baseParentSha": "c4513d446bf98cfcbe72ed83f17cd3220174d88f",
+    "mergeBaseSha": "d6b82b12e67d108b7c82d76d943a3a47814acbc1",
+    "ordered_parents_match": true,
+    "N_signature_verified": true,
+    "M_on_live_base": true,
+    "PR_changed_leaves": 1,
+    "base_changed_leaves": 196,
+    "patch_comparisons_equal": true,
+    "PR_comparison_paths_match_tree_delta": true,
+    "merged_comparison_paths_match_tree_delta": true,
+    "tree_results": {
+      "B": {
+        "root_matches": true,
+        "truncated": false,
+        "unique_paths": true,
+        "leaves": 1495,
+        "entries": 1962
+      },
+      "R": {
+        "root_matches": true,
+        "truncated": false,
+        "unique_paths": true,
+        "leaves": 1495,
+        "entries": 1962
+      },
+      "M": {
+        "root_matches": true,
+        "truncated": false,
+        "unique_paths": true,
+        "leaves": 1545,
+        "entries": 2026
+      },
+      "N": {
+        "root_matches": true,
+        "truncated": false,
+        "unique_paths": true,
+        "leaves": 1545,
+        "entries": 2026
+      }
+    },
+    "geometry_qualifies": true,
+    "review_authority_checked": false,
+    "scope": "Immutable merge geometry only; no Codex review or current PR gate authority is asserted.",
+    "overlapOrDirectoryCollisions": 0,
+    "treeOverlayMismatches": 0,
+    "uncompressedRawBytes": 1963629,
+    "compressedRawBytes": 348861,
+    "verifierReplay": {
+      "entrypoint": "src/base-sync.js#verifyBaseSyncEvidence",
+      "result": "PASS",
+      "verifiedAt": "2026-11-04T14:55:18.228Z",
+      "sourceSha256": "c286e48ffcd7eaaa6fe5012bdae69bea7512624fb9f6463b9ee6e80a547b8576",
+      "reviewAuthorityAsserted": false
+    }
+  }
+}

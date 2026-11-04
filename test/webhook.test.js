@@ -186,6 +186,13 @@ test("configured bot clean issue comments trigger evaluation", () => {
   assert.equal(ignored, false);
 });
 
+test("a non-clean configured bot response wakes evaluation to invalidate carried authority", () => {
+  assert.equal(shouldIgnoreEvent("issue_comment", issueCommentPayload({
+    user: "chatgpt-codex-connector[bot]",
+    body: "The completed round has a new finding.",
+  }), config), false);
+});
+
 test("configured bot edited or deleted issue comments trigger evaluation", () => {
   for (const action of ["edited", "deleted"]) {
     const ignored = shouldIgnoreEvent(

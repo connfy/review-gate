@@ -16,6 +16,9 @@ binding = "PENDING_REVIEWS"
 [vars]
 # Commit status context that branch protection requires.
 STATUS_CONTEXT = "review-gate/codex-clean"
+# Verified base-sync review carry is off unless explicitly enabled after the
+# owner updates consumer rules and approves Contents: read on installations.
+# BASE_SYNC_REVIEW_ENABLED = "true"
 # CI duration budgeting is opt-in and deployment-wide (no repository overrides).
 # Leave CI_BUDGET_MINUTES absent to preserve existing deployments. To activate:
 # CI_BUDGET_MINUTES = "10"

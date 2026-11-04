@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { reviewBot, reviewStateComment } from "./fixtures/review-state.js";
 
 import {
   DEFAULT_STATUS_BOARD_MARKER,
@@ -72,7 +73,7 @@ function settledDispositionFixture(overrides = {}) {
     issueComments: [request, disposition],
     reviews: [
       {
-        user: { login: "chatgpt-codex-connector[bot]" },
+        user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
         body: "Codex Review\n\nHere are two findings.",
         submitted_at: "2026-08-02T00:02:00Z",
         commit_id: fullHeadSha,
@@ -95,32 +96,53 @@ function settledDispositionFixture(overrides = {}) {
   };
 }
 
-test("clean review comment after latest head passes", () => {
+test("settlement cannot cover a running round or later known findings", async (context) => {
+  for (const [kind, second, expected] of [
+    ["running", "02:30", "pending"],
+    ["findings", "04:00", "failure"],
+    ["findings", "02:30", "success"],
+    ["running", "01:30", "success"],
+  ]) {
+    await context.test(`${kind} ${second}`, () => {
+      const value = settledDispositionFixture();
+      const board = reviewStateComment(fullHeadSha, `2026-08-02T00:${second}Z`);
+      board.body = kind === "running"
+        ? board.body.replace('"status":"completed"', '"status":"running"')
+          .replace('✅ **Completed**', '🔄 **Running** since')
+        : board.body.replace('"has_any_findings":false', '"has_any_findings":true');
+      value.issueComments.push(board);
+      assert.equal(evaluateGate(value).state, expected);
+    });
+  }
+});
+
+test("an explicitly outdated response cannot finish a current-head review for settlement", () => {
+  const value = settledDispositionFixture({ issueEyesReactions: [{
+    user: reviewBot, content: "eyes", created_at: "2026-08-02T00:02:10Z",
+  }] });
+  value.issueComments.push({ id: 30, user: reviewBot,
+    body: `A finding remains.\n**Reviewed commit:** \`${"1".repeat(40)}\``,
+    created_at: "2026-08-02T00:02:30Z" });
+  assert.equal(evaluateGate(value).state, "pending");
+});
+
+test("unbound clean comment with full-head completed provider state passes", () => {
   const result = evaluateGate({
-    pr: pr(),
-    issueComments: [
-      {
-        id: 1,
-        user: { login: "chatgpt-codex-connector[bot]" },
-        body: "Codex Review: Didn't find any major issues. Breezy!",
-        created_at: "2026-05-28T00:01:00Z",
-      },
-    ],
+    pr: { ...pr(), head: { sha: fullHeadSha } },
+    issueComments: [reviewStateComment(fullHeadSha, "2026-05-28T00:00:30Z"), {
+      id: 1, user: reviewBot, body: "Codex Review: Didn't find any major issues. Breezy!",
+      created_at: "2026-05-28T00:01:00Z",
+    }],
     timelineEvents: timelineAfterHead([1]),
   });
   assert.equal(result.state, "success");
 });
 
-test("PR body thumbs-up reaction from review bot after latest head passes", () => {
+test("PR body thumbs-up with full-head completed provider state passes", () => {
   const result = evaluateGate({
-    pr: pr(),
-    issueReactions: [
-      {
-        user: { login: "chatgpt-codex-connector[bot]" },
-        content: "+1",
-        created_at: "2026-05-28T00:02:00Z",
-      },
-    ],
+    pr: { ...pr(), head: { sha: fullHeadSha } },
+    issueComments: [reviewStateComment(fullHeadSha, "2026-05-28T00:01:30Z")],
+    issueReactions: [{ user: reviewBot, content: "+1", created_at: "2026-05-28T00:02:00Z" }],
     timelineEvents: timelineHeadAt("2026-05-28T00:01:00Z"),
   });
   assert.equal(result.state, "success");
@@ -132,7 +154,7 @@ test("PR body eyes reaction from review bot after latest head is pending", () =>
     pr: pr(),
     issueEyesReactions: [
       {
-        user: { login: "chatgpt-codex-connector[bot]" },
+        user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
         content: "eyes",
         created_at: "2026-05-28T00:02:00Z",
       },
@@ -155,7 +177,7 @@ test("PR body eyes reaction before latest head does not go pending", () => {
     pr: pr(),
     issueEyesReactions: [
       {
-        user: { login: "chatgpt-codex-connector[bot]" },
+        user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
         content: "eyes",
         created_at: "2026-05-28T00:00:00Z",
       },
@@ -185,9 +207,12 @@ test("PR body thumbs-up reaction from a user does not pass", () => {
 test("PR body thumbs-up reaction before latest head does not pass", () => {
   const result = evaluateGate({
     pr: pr(),
+    reviews: [{ user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
+      state: "COMMENTED", commit_id: "abc123", body: "Review completed.",
+      submitted_at: "2026-05-28T00:01:00Z" }],
     issueReactions: [
       {
-        user: { login: "chatgpt-codex-connector[bot]" },
+        user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
         content: "+1",
         created_at: "2026-05-28T00:00:00Z",
       },
@@ -211,7 +236,7 @@ test("PR body thumbs-up reaction before latest review request does not pass", ()
     ],
     issueReactions: [
       {
-        user: { login: "chatgpt-codex-connector[bot]" },
+        user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
         content: "+1",
         created_at: "2026-05-28T00:02:00Z",
       },
@@ -246,7 +271,7 @@ test("review request eyes reaction from review bot is pending", () => {
         comment: reviewRequest,
         reactions: [
           {
-            user: { login: "chatgpt-codex-connector[bot]" },
+            user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
             content: "eyes",
             created_at: "2026-05-28T00:02:15Z",
           },
@@ -275,14 +300,14 @@ test("review bot response after eyes stops pending state", () => {
     pr: pr(),
     issueEyesReactions: [
       {
-        user: { login: "chatgpt-codex-connector[bot]" },
+        user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
         content: "eyes",
         created_at: "2026-05-28T00:02:00Z",
       },
     ],
     reviews: [
       {
-        user: { login: "chatgpt-codex-connector[bot]" },
+        user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
         body: "Codex Review\n\nHere are some automated review suggestions.",
         submitted_at: "2026-05-28T00:03:00Z",
         commit_id: "abc123",
@@ -309,7 +334,7 @@ test("review request eyes before latest head does not go pending", () => {
         comment: reviewRequest,
         reactions: [
           {
-            user: { login: "chatgpt-codex-connector[bot]" },
+            user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
             content: "eyes",
             created_at: "2026-05-28T00:03:00Z",
           },
@@ -337,7 +362,7 @@ test("unresolved current thread blocks even with clean comment", () => {
     issueComments: [
       {
         id: 1,
-        user: { login: "chatgpt-codex-connector" },
+        user: { login: "chatgpt-codex-connector", type: "Bot" },
         body: "Codex Review: Didn't find any major issues.",
         created_at: "2026-05-28T00:01:00Z",
       },
@@ -565,13 +590,13 @@ test("an uncorrelated fresh request comment fails settlement closed", () => {
 test("settled disposition requires a non-dismissed formal bot review on exact head", () => {
   for (const review of [
     {
-      user: { login: "chatgpt-codex-connector[bot]" },
+      user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
       submitted_at: "2026-08-02T00:02:00Z",
       commit_id: "def456def456def456def456def456def456def4",
       state: "COMMENTED",
     },
     {
-      user: { login: "chatgpt-codex-connector[bot]" },
+      user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
       submitted_at: "2026-08-02T00:02:00Z",
       commit_id: fullHeadSha,
       state: "DISMISSED",
@@ -611,7 +636,7 @@ test("later request, new head, base advance, and unresolved thread block disposi
     html_url: "https://github.com/connfy/example/pull/123#issuecomment-40",
   };
   withLaterRequest.reviews.push({
-    user: { login: "chatgpt-codex-connector[bot]" },
+    user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
     submitted_at: "2026-08-02T00:05:00Z",
     commit_id: fullHeadSha,
     state: "COMMENTED",
@@ -654,7 +679,7 @@ test("review in progress blocks a settled disposition", () => {
   const fixture = settledDispositionFixture({
     issueEyesReactions: [
       {
-        user: { login: "chatgpt-codex-connector[bot]" },
+        user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
         content: "eyes",
         created_at: "2026-08-02T00:04:30Z",
       },
@@ -669,7 +694,7 @@ test("a status board posted after eyes does not let a settlement pass mid-review
   const fixture = settledDispositionFixture({
     issueEyesReactions: [
       {
-        user: { login: "chatgpt-codex-connector[bot]" },
+        user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
         content: "eyes",
         created_at: "2026-08-02T00:04:30Z",
       },
@@ -677,7 +702,7 @@ test("a status board posted after eyes does not let a settlement pass mid-review
   });
   fixture.issueComments.push({
     id: 40,
-    user: { login: "chatgpt-codex-connector[bot]" },
+    user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
     body: `${DEFAULT_STATUS_BOARD_MARKER}\n\n## Codex Review Summary\n\nRunning`,
     created_at: "2026-08-02T00:04:45Z",
   });
@@ -734,7 +759,7 @@ test("clean comment before latest head does not pass", () => {
     issueComments: [
       {
         id: 1,
-        user: { login: "chatgpt-codex-connector" },
+        user: { login: "chatgpt-codex-connector", type: "Bot" },
         body: "Codex Review: Didn't find any major issues.",
         created_at: "2026-05-27T23:59:59Z",
       },
@@ -751,7 +776,7 @@ test("clean comment before force-push boundary does not pass", () => {
     issueComments: [
       {
         id: 1,
-        user: { login: "chatgpt-codex-connector" },
+        user: { login: "chatgpt-codex-connector", type: "Bot" },
         body: "Codex Review: Didn't find any major issues.",
         created_at: "2026-05-28T00:01:00Z",
       },
@@ -771,7 +796,7 @@ test("pending review without submitted timestamp is ignored", () => {
     pr: pr(),
     reviews: [
       {
-        user: { login: "chatgpt-codex-connector" },
+        user: { login: "chatgpt-codex-connector", type: "Bot" },
         body: "Codex Review: Didn't find any major issues.",
         submitted_at: null,
       },
@@ -788,7 +813,7 @@ test("draft PR blocks the review gate", () => {
     issueComments: [
       {
         id: 1,
-        user: { login: "chatgpt-codex-connector" },
+        user: { login: "chatgpt-codex-connector", type: "Bot" },
         body: "Codex Review: Didn't find any major issues.",
         created_at: "2026-05-28T00:01:00Z",
       },
@@ -801,13 +826,14 @@ test("draft PR blocks the review gate", () => {
 
 test("clean review body must match current head SHA", () => {
   const result = evaluateGate({
-    pr: pr(),
+    pr: { ...pr(), head: { sha: fullHeadSha } },
     reviews: [
       {
-        user: { login: "chatgpt-codex-connector" },
+        user: { login: "chatgpt-codex-connector", type: "Bot" },
         body: "Codex Review: Didn't find any major issues.",
+        state: "COMMENTED",
         submitted_at: "2026-05-28T00:01:00Z",
-        commit_id: "abc123",
+        commit_id: fullHeadSha,
       },
     ],
     timelineEvents: timelineAfterHead([]),
@@ -820,8 +846,9 @@ test("clean review body for an old SHA does not pass", () => {
     pr: pr(),
     reviews: [
       {
-        user: { login: "chatgpt-codex-connector" },
+        user: { login: "chatgpt-codex-connector", type: "Bot" },
         body: "Codex Review: Didn't find any major issues.",
+        state: "COMMENTED",
         submitted_at: "2026-05-28T00:01:00Z",
         commit_id: "old-sha",
       },
@@ -834,12 +861,12 @@ test("clean review body for an old SHA does not pass", () => {
 
 test("custom bot login and clean text are honoured", () => {
   const result = evaluateGate({
-    pr: pr(),
+    pr: { ...pr(), head: { sha: fullHeadSha } },
     issueComments: [
       {
         id: 1,
-        user: { login: "my-reviewer[bot]" },
-        body: "LGTM: no blocking issues found.",
+        user: { login: "my-reviewer[bot]", type: "Bot" },
+        body: `LGTM: no blocking issues found.\n**Reviewed commit:** \`${fullHeadSha}\``,
         created_at: "2026-05-28T00:01:00Z",
       },
     ],
@@ -854,20 +881,20 @@ test("custom bot login and clean text are honoured", () => {
 
 test("clean comment passes when Reviewed commit matches head but timeline lags", () => {
   const result = evaluateGate({
-    pr: pr(),
+    pr: { ...pr(), head: { sha: fullHeadSha } },
     issueComments: [
       {
         id: 999,
-        user: { login: "chatgpt-codex-connector[bot]" },
+        user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
         body:
-          "Codex Review: Didn't find any major issues.\n\n**Reviewed commit:** `abc123`",
+          `Codex Review: Didn't find any major issues.\n\n**Reviewed commit:** \`${fullHeadSha}\``,
         created_at: "2026-05-28T00:02:00Z",
       },
     ],
     timelineEvents: [
       {
         event: "committed",
-        sha: "abc123",
+        sha: fullHeadSha,
         author: { date: "2026-05-28T00:00:00Z" },
       },
     ],
@@ -881,7 +908,7 @@ test("comment after head boundary but reviewed commit mismatch does not pass", (
     issueComments: [
       {
         id: 2,
-        user: { login: "chatgpt-codex-connector[bot]" },
+        user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
         body:
           "Codex Review: Didn't find any major issues.\n\n**Reviewed commit:** `46002bce95`",
         created_at: "2026-05-28T00:06:00Z",
@@ -896,7 +923,7 @@ test("comment after head boundary but reviewed commit mismatch does not pass", (
       {
         event: "commented",
         id: 2,
-        user: { login: "chatgpt-codex-connector[bot]" },
+        user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
         body:
           "Codex Review: Didn't find any major issues.\n\n**Reviewed commit:** `46002bce95`",
         created_at: "2026-05-28T00:06:00Z",
@@ -913,7 +940,7 @@ test("clean comment without timeline event or reviewed commit does not pass", ()
     issueComments: [
       {
         id: 999,
-        user: { login: "chatgpt-codex-connector[bot]" },
+        user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
         body: "Codex Review: Didn't find any major issues.",
         created_at: "2026-05-28T00:02:00Z",
       },
@@ -927,7 +954,7 @@ test("clean comment without timeline event or reviewed commit does not pass", ()
     ],
   });
   assert.equal(result.state, "failure");
-  assert.match(result.details[0], /No clean review pass/);
+  assert.match(result.details[0], /no verified full-head binding/i);
 });
 
 test("stale clean review explains newer head commit", () => {
@@ -936,7 +963,7 @@ test("stale clean review explains newer head commit", () => {
     issueComments: [
       {
         id: 1,
-        user: { login: "chatgpt-codex-connector[bot]" },
+        user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
         body:
           "Codex Review: Didn't find any major issues.\n\n**Reviewed commit:** `46002bce95`",
         created_at: "2026-05-28T00:06:00Z",
@@ -960,7 +987,7 @@ test("stale clean review before latest commit gets an explicit message", () => {
     issueComments: [
       {
         id: 1,
-        user: { login: "chatgpt-codex-connector[bot]" },
+        user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
         body: "Codex Review: Didn't find any major issues.",
         created_at: "2026-05-28T00:01:00Z",
       },
@@ -996,7 +1023,7 @@ function readiedPrFixture(overrides = {}) {
 
 const statusBoard = {
   id: 7,
-  user: { login: "chatgpt-codex-connector[bot]" },
+  user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
   body: `${DEFAULT_STATUS_BOARD_MARKER}\n\n## Codex Review Summary\n\n| Review | Status |\n| --- | --- |\n| Code Review | Running |`,
   created_at: "2026-09-29T09:56:41Z",
 };
@@ -1015,7 +1042,7 @@ test("the review bot status board does not end an in-progress review", () => {
       issueComments: [statusBoard],
       issueEyesReactions: [
         {
-          user: { login: "chatgpt-codex-connector[bot]" },
+          user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
           content: "eyes",
           created_at: "2026-09-29T09:56:35Z",
         },
@@ -1033,21 +1060,15 @@ test("the status board alone does not answer a requested review", () => {
   assert.equal(result.description, REVIEW_REQUESTED_DESCRIPTION);
 });
 
-test("a clean reaction after the ready transition passes the gate", () => {
-  const result = evaluateGate(
-    readiedPrFixture({
-      issueComments: [statusBoard],
-      issueReactions: [
-        {
-          user: { login: "chatgpt-codex-connector[bot]" },
-          content: "+1",
-          created_at: "2026-09-29T09:58:00Z",
-        },
-      ],
-      now: Date.parse("2026-09-29T09:58:30Z"),
-    }),
-  );
-  assert.equal(result.state, "success");
+test("a clean reaction with completed state after the ready transition passes the gate", () => {
+  const value = readiedPrFixture({
+    issueComments: [reviewStateComment(fullHeadSha, "2026-09-29T09:57:00Z")],
+    issueReactions: [{ user: reviewBot, content: "+1", created_at: "2026-09-29T09:58:00Z" }],
+    now: Date.parse("2026-09-29T09:58:30Z"),
+  });
+  value.pr.head.sha = fullHeadSha;
+  value.timelineEvents[0].sha = fullHeadSha;
+  assert.equal(evaluateGate(value).state, "success");
 });
 
 test("an awaited review becomes a failure after the start window", () => {
@@ -1064,7 +1085,7 @@ test("a review bot response after the request ends the wait", () => {
       issueComments: [
         {
           id: 8,
-          user: { login: "chatgpt-codex-connector[bot]" },
+          user: { login: "chatgpt-codex-connector[bot]", type: "Bot" },
           body: "Codex could not complete this review.",
           created_at: "2026-09-29T09:56:50Z",
         },
