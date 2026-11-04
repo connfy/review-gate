@@ -104,6 +104,27 @@ Workers KV에 기록되고 예약 sweep에서 가장 먼저 다시 계산됩니�
 없어도 늦게 붙은 PR 본문 `+1`을 우선 sweep에서 발견할 수 있습니다. `pending` 큐에 들어오지
 않은 PR은 기존의 열린 PR 회전 sweep이 안전망 역할을 하며 계속 확인합니다.
 
+Webhook deliveries, retries, same-base sibling evaluations, and scheduled sweeps
+share one status publisher. It skips an identical state, description, and target
+link only when the latest status in the case-insensitive context belongs to the
+authenticated GitHub App's numeric bot identity. A different or unknown creator
+is overwritten; changing or removing a settled-disposition audit link also
+publishes. Identity comes from authenticated `GET /app` and the App's bot user
+lookup, with no new setting or permission. Failed optimization reads log an
+error and fall back to publication. Success always checks the live head and
+base: a changed head abstains, and a changed base writes the mandatory retry
+failure. Pending tracking and retries continue after a skipped write.
+
+An unchanged evaluation emits no new GitHub `status` event. Recover a lost or
+failed consumer workflow with its rerun or `workflow_dispatch` procedure;
+webhook redelivery does not force another unchanged event. See
+[ADR 0006](docs/decisions/0006-deduplicate-review-status.md).
+
+A duplicate sibling status does not refresh the PR's recorded `base.sha`.
+The inspected consumer workflows use that snapshot, so enforced strict
+up-to-date checks must require an update push; without strict mode, the
+existing stale-base gap remains.
+
 ## 설치하기 (생각보다 금방 끝나요)
 
 총 5단계예요. GitHub 앱 만들기 → 열쇠 파일 변환 → 도구 올리기 → 앱 연결 → 끝.

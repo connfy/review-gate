@@ -27,9 +27,11 @@ Workers KV namespace.
    the referenced PR in `waitUntil()`. A merged-PR close also lists the other
    open PRs in that repository and evaluates siblings targeting the same base
    ref.
-3. Each result is written as the configured GitHub commit status.
-4. A `pending` result is stored in `PENDING_REVIEWS`; a terminal result removes
-   the matching queued head.
+3. The shared publisher compares each result with the latest configured commit
+   status and writes it unless its state, description, target link, and trusted
+   App creator already match. Success always rechecks the live head and base.
+4. A `pending` result is stored in `PENDING_REVIEWS` independently of publication.
+   Scheduled settlement removes observed queued revisions for a terminal result.
 5. Every three minutes, the scheduled handler evaluates queued pending heads
    and the rotating open-PR fallback with separate budgets.
 
@@ -78,13 +80,60 @@ when one exists, or for an auto-fired round with no request comment anywhere a
 server-generated boundary (PR creation and head-ref event times, never
 client-controlled commit timestamps) — then a later non-dismissed formal bot
 review for that exact head, and a later exact head/base attestation from an
-allowlisted human. Either live SHA changing invalidates the signal. No extra
+allowlisted human. Either recorded PR SHA changing invalidates the signal. No extra
 invalidation store or mutation authority is introduced.
 
 Merged base advances trigger same-base sibling evaluation from the subscribed
 `pull_request` close event. Direct pushes to a base branch remain covered by the
-rotating scheduled fallback, so their invalidation occurs when that fallback
-selects the affected PR.
+rotating scheduled fallback. Both paths read the PR's recorded `base.sha`, not
+the live base ref. Invalidation after a live advance assumes an update push
+enforced by strict up-to-date required checks; a snapshot that did not move
+can leave a settlement valid despite re-evaluation.
+
+## Review status publication
+
+Webhooks, review-start retries, same-base sibling evaluations, and both
+scheduled PR sweeps use one publication decision. Commit status contexts match
+case-insensitively. An unchanged status is suppressed only when its numeric
+`creator.id` matches the authenticated GitHub App's bot ID; another or unknown
+creator cannot establish the App's result. The comparison uses the description
+as published (the existing 140-character limit) and the complete target link,
+including its removal, because a settled-disposition link identifies the human
+attestation being relied on.
+
+The first matching status in GitHub's newest-first history is authoritative.
+Latest-status reads stop on the page containing that match; absence within the
+existing 1,000-status read limit causes a conservative write. CI budget reads
+that require history retain their full traversal and completeness checks.
+Only an identical-content candidate needs an App identity lookup. Authenticated
+`GET /app` uses the existing runtime App JWT; `GET /users/{slug}[bot]` uses the
+installation token and needs no added permission. Its positive numeric bot ID
+is cached by App ID in one entry per Worker isolate, including an in-flight
+lookup shared by concurrent evaluations. Numeric identity survives a rename,
+so the cache needs no time-based expiry. A different App ID replaces the entry;
+failed lookups are discarded. The lookup adds two requests on a cache miss.
+Failed status or identity reads log the error and attempt normal publication.
+
+After those optimization reads, every success re-fetches the PR. A moved head
+abstains. A changed base always writes the existing changed-PR failure, even
+if a duplicate success or failure was seen. A failed live PR read still fails
+the evaluation. The public reporter keeps its boolean publication result;
+scheduled summaries separately count an actual mandatory-failure write as an
+update. Queue tracking, pending settlement, and scheduled retry eligibility do
+not depend on whether a duplicate status was skipped.
+
+GitHub status writes are append-only and have no conditional write operation.
+Concurrent evaluations can read the same prior status and both publish; a
+later identical own evaluation converges to no write. Skipping a duplicate
+also skips its `status` event. Consumer workflow recovery uses explicit reruns
+or `workflow_dispatch`, rather than repeated unchanged review events. See
+[ADR 0006](decisions/0006-deduplicate-review-status.md).
+
+A sibling's duplicate status cannot supply live-base validation when consumers
+use the PR's recorded `base.sha`. Strict up-to-date required checks must enforce
+the update push; without them, the existing snapshot gap remains. A sweep's
+mandatory retry failure after a racing PR change is re-evaluated by the next
+event or rotating fallback, independent of duplicate suppression.
 
 ## Operational boundaries
 

@@ -409,7 +409,7 @@ test("review-start retry observes a later PR body clean reaction after bounded p
   assert.equal(result.state, "success");
 });
 
-test("review-start retry keeps pending after bounded pending rechecks", async () => {
+test("review-start retry passes every current-head pending recheck to the publisher", async () => {
   const sleeps = [];
   const reports = [];
   const result = await maybeRetryReviewStart({
@@ -435,7 +435,7 @@ test("review-start retry keeps pending after bounded pending rechecks", async ()
   });
 
   assert.deepEqual(sleeps, [7_000, 7_000]);
-  assert.deepEqual(reports, []);
+  assert.deepEqual(reports, ["pending", "pending"]);
   assert.equal(result.state, "pending");
 });
 
@@ -491,7 +491,7 @@ test("review-start retry ignores stale retry results for an old head", async () 
   assert.equal(result.state, "pending");
 });
 
-test("scheduled sweep status reporting only writes meaningful changes", () => {
+test("status reporting suppresses only an unchanged status from the authenticated App", () => {
   assert.equal(
     shouldReportStatus(null, {
       state: "success",
@@ -508,8 +508,9 @@ test("scheduled sweep status reporting only writes meaningful changes", () => {
   );
   assert.equal(
     shouldReportStatus(
+      { state: "success", description: "Review gate passed.", creator: { id: 123 } },
       { state: "success", description: "Review gate passed." },
-      { state: "success", description: "Review gate passed." },
+      123,
     ),
     false,
   );
@@ -523,6 +524,7 @@ test("scheduled sweep rewrites a settled disposition audit link", () => {
         description:
           "Settled by @connfy for head abc123abc123 on base def456def456.",
         target_url: "https://github.com/old-comment",
+        creator: { id: 123 },
       },
       {
         state: "success",
@@ -530,6 +532,7 @@ test("scheduled sweep rewrites a settled disposition audit link", () => {
           "Settled by @connfy for head abc123abc123 on base def456def456.",
         targetUrl: "https://github.com/new-comment",
       },
+      123,
     ),
     true,
   );
@@ -943,9 +946,14 @@ test("scheduled pending sweep does not spend two slots on stale heads of one PR"
           return {
             state: "pending",
             description: "Review bot is reviewing the latest head.",
+            creator: { id: 123 },
           };
         },
+        async setStatus() {
+          throw new Error("unchanged own status must not be published again");
+        },
       }),
+      getOwnActorId: async () => 123,
       evaluate: async () => {
         evaluations += 1;
         return {
@@ -960,4 +968,6 @@ test("scheduled pending sweep does not spend two slots on stale heads of one PR"
   assert.equal(evaluations, 1);
   assert.equal(summary.queued, 2);
   assert.equal(summary.pullRequests, 1);
+  assert.equal(summary.unchanged, 1);
+  assert.equal(summary.errors, 0);
 });
