@@ -50,3 +50,7 @@ PR edit triggered a re-evaluation.
 - Every requested review now occupies a priority-sweep slot while it runs.
   Queue growth tracks active reviews, as ADR 0001 intended, rather than
   repository count.
+
+ADR 0005 retains this board-alone exclusion. Versioned full-head completion
+metadata may bind a separate clean receipt/reaction; the board itself still
+neither creates a clean signal nor answers a requested review.

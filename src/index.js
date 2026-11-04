@@ -17,6 +17,7 @@ import {
   listInstallationRepositories,
   RepoClient,
 } from "./github.js";
+import { collectBaseSyncEvidence } from "./base-sync-github.js";
 import {
   mergedPullRequestBaseRefFromEvent,
   pullRequestRefFromEvent,
@@ -73,6 +74,7 @@ function configFromEnv(env) {
         .filter(Boolean)
     : undefined;
   return resolveConfig({
+    baseSyncEnabled: String(env.BASE_SYNC_REVIEW_ENABLED ?? "").trim().toLowerCase() === "true",
     cleanText: env.CLEAN_REVIEW_TEXT,
     cleanReactionContent: env.CLEAN_REACTION_CONTENT,
     inProgressReactionContent: env.REVIEW_IN_PROGRESS_REACTION_CONTENT,
@@ -228,6 +230,27 @@ export async function reportStatus(client, result) {
         description: "Pull request changed during evaluation; retry required.",
       });
       return false;
+    }
+    if (result.baseSync) {
+      const proof = result.baseSync;
+      const matchesPr = !livePr?.draft &&
+        livePr?.base?.ref === proof.baseRef &&
+        livePr?.base?.repo?.full_name === proof.baseRepository;
+      let matchesRef = false;
+      try {
+        const liveRef = await client.branchRef(proof.baseRef);
+        matchesRef = liveRef?.object?.type === "commit" &&
+          liveRef.object.sha === proof.liveBaseSha;
+      } catch (error) {
+        console.warn("base sync publication could not re-read base ref:", error);
+      }
+      if (!matchesPr || !matchesRef) {
+        await client.setStatus(result.sha, {
+          state: "failure",
+          description: "Pull request changed during evaluation; retry required.",
+        });
+        return false;
+      }
     }
   }
 
@@ -810,7 +833,7 @@ export async function maybeRetryReviewStart({
   return current;
 }
 
-async function evaluateFromGitHub(client, ref, config) {
+async function readGateInputs(client, ref, config) {
   const [
     pr,
     issueComments,
@@ -838,7 +861,7 @@ async function evaluateFromGitHub(client, ref, config) {
     })),
   );
 
-  return evaluateGate({
+  return {
     pr,
     issueComments,
     issueReactions,
@@ -848,7 +871,42 @@ async function evaluateFromGitHub(client, ref, config) {
     reviewRequestReactions,
     timelineEvents,
     config,
-  });
+  };
+}
+
+function reportReviewIdentityDiagnostics(result) {
+  const failures = result.reviewIdentityFailures ?? [];
+  const malformed = failures.some((failure) => ![
+    "missing-full-head-binding", "stale-or-non-clean-completion",
+  ].includes(failure.code));
+  if (failures.length && (malformed || result.state === "failure")) {
+    console.warn(`review identity verification unavailable for PR #${result.prNumber}:`,
+      JSON.stringify(failures));
+  }
+  return result;
+}
+
+export async function evaluateFromGitHub(client, ref, config) {
+  config = resolveConfig(config);
+  const inputs = await readGateInputs(client, ref, config);
+  const { pr, reviewThreads } = inputs;
+  const direct = evaluateGate(inputs);
+  if (!config.baseSyncEnabled || direct.state === "success" || direct.state === "pending" || pr.draft ||
+    reviewThreads.some((thread) => !thread?.isResolved && !thread?.isOutdated)) return reportReviewIdentityDiagnostics(direct);
+  try {
+    const baseSyncEvidence = await collectBaseSyncEvidence(client, inputs);
+    if (!baseSyncEvidence) return reportReviewIdentityDiagnostics(direct);
+    // Git object collection can be slower than ordinary evaluation. Re-fetch
+    // review/lifecycle inputs before reusing that immutable proof so newly
+    // requested reviews, findings, drafts and threads still block publication.
+    const freshInputs = await readGateInputs(client, ref, config);
+    const result = evaluateGate({ ...freshInputs, baseSyncEvidence });
+    if (result.baseSyncFailure) console.warn(result.baseSyncFailure);
+    return reportReviewIdentityDiagnostics(result);
+  } catch (error) {
+    console.warn(`base sync verification unavailable for PR #${pr.number}:`, error);
+    return reportReviewIdentityDiagnostics({ ...direct, baseSyncFailure: String(error?.message ?? error) });
+  }
 }
 
 export default {

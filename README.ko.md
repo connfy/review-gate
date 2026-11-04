@@ -39,12 +39,27 @@ Review Gate는 딱 그 애매한 순간을 없애주는 작은 도구예요. Cod
 - 아직 안 끝난 리뷰 대화가 없다
 - 정해둔 리뷰 봇이 최근 코드를 보고 "통과" 신호를 남겼다
 
-여기서 "통과" 신호는 세 가지 중 하나면 인정돼요.
+A clean pass requires a configured Bot identity and the full current head:
 
-- 리뷰 봇이 PR에 통과 문구가 담긴 코멘트를 남겼거나
-- 리뷰 봇이 지금 최신 코드에 대한 리뷰로 통과 문구를 남겼거나
-- 리뷰 봇이 PR 본문에 `+1` 반응을 남겼고, 그 반응이 최신 코드 업데이트와 최신 리뷰 요청
-  이후에 만들어진 경우입니다.
+- a non-dismissed clean formal review with that full `commit_id`;
+- a separate clean comment using `**Reviewed commit:**` followed by that full
+  SHA in backticks; or
+- a clean comment or PR-body `+1` joined to the same numeric Bot actor's
+  completed, clean `codex-review-state:v1` full-head metadata.
+
+The summary alone never grants success or finishes the requested-review wait.
+GitHub can label a Bot reaction as `User`; its numeric ID must match the
+configured Bot summary author. Reaction account type cannot establish identity.
+Git dates and timeline order cannot bind a result to a head. Newer requests,
+ready/force/restoration boundaries, findings, and active-review signals block
+older clean evidence. This hardening always applies, independently of carry.
+
+A metadata-bound reaction supplies presence and a freshness cap, never proof of
+a new review run. Matching full-head completed Code Review state proves coverage.
+An unbound result with surviving `eyes` becomes a diagnostic failure after
+`REVIEW_START_WINDOW_MS`; expiry never proves completion. Known running Code
+Review remains pending. Malformed state logs one reason-coded warning per
+evaluation without comment bodies.
 
 선택 기능인 settled disposition(결론 기록)을 사용하면 변경되지 않은 head/base 쌍을 다시
 리뷰받지 않고도 이미 검토한 지적의 결론을 남길 수 있습니다. 라운드의 기준점(앵커)은
@@ -64,15 +79,68 @@ Review Gate는 딱 그 애매한 순간을 없애주는 작은 도구예요. Cod
 @review-gate settle <현재-head의-소문자-40자리-전체-SHA> <현재-base의-소문자-40자리-전체-SHA>
 ```
 
-앵커 → 봇 리뷰 → 결론 기록 순으로 시각이 엄격히 증가해야 합니다. PR 본문 문구는
-인정하지 않습니다. 이후 리뷰 요청, head 변경, base 변경이 생기면 신호는 무효가 되며,
-해결되지 않은 현재 스레드가 0개이고 리뷰가 진행 중이지 않아야 한다는 기존 조건도
-그대로 적용됩니다. 상태에는 사람 계정과 줄인 head/base 쌍이 표시되고 명령 코멘트로
-연결됩니다.
+The anchor, review, and disposition require strictly increasing timestamps.
+PR body text does not count. A later review request, head change, or change to
+the PR's recorded `base.sha` invalidates the settlement. Threads and ongoing
+reviews still block. Known running Code Review blocks settlement, and later
+same-head non-clean state invalidates an older attestation.
+The status names the human and head/base pair and links
+to the command comment.
 
-PR이 merge되어 base 브랜치가 바뀌면, 구독 중인 `pull_request` 종료 이벤트가 같은 base ref를
-대상으로 하는 다른 열린 PR을 즉시 다시 계산합니다. base에 직접 push한 경우에는 구독한
-이벤트가 없으므로 기존 회전식 예약 sweep이 해당 PR을 선택할 때 신호가 무효화됩니다.
+Merged-PR close events re-evaluate same-base siblings; scheduled sweeps cover
+direct base pushes. The re-read `base.sha` is a PR snapshot, not the live branch
+tip. Invalidation after a live base advance assumes enforced strict up-to-date
+required checks: the required update push refreshes the snapshot. Without strict
+mode, a base advance alone can leave the settlement valid. See
+[the architecture](docs/architecture.md#base-snapshots-and-merge-protection).
+
+### Verified base sync
+
+Carry is off by default. The owner can enable `BASE_SYNC_REVIEW_ENABLED=true`
+after updating consumer review rules and approving any needed Contents read
+access. Disabled carry performs no Git graph/tree proof reads. Direct review
+hardening always applies independently of this switch.
+
+A two-parent base merge can carry an explicitly commit-bound clean review of
+the original head R. Every side parent must be on the live base history. Base
+and PR changes must touch disjoint files; complete patches and Git trees prove
+unchanged PR paths, content, modes, and rename metadata. Every sync in a chain
+is compared with the original directly reviewed R, and each integrated base
+must retain the preceding sync's base history. The success links to that
+review and says:
+
+`Review gate passed: base sync of reviewed head <full-R-sha> onto <full-M-sha>.`
+
+A bare reaction, unbound comment, settlement, or earlier carried status cannot
+establish R. The full-head clean sources above can supply review authority.
+Drafts, threads, requested or ongoing reviews still block. New commits, rebases,
+force pushes, overlapping changes, conflict edits, missing/binary/truncated PR
+patches, incomplete trees, and API errors take the ordinary direct-review path.
+Required CI still validates integration; this proof preserves reviewed changes.
+Review inputs are refreshed after graph collection before applying the proof;
+publication rechecks PR identity and the live ref. Closure alone does not
+invalidate immutable review coverage. Explicit results for heads outside R→N
+cannot retract coverage; R, intermediate syncs, N, and unknown heads remain
+subject to the blockers.
+Contents: read permission and any existing installation consent are needed for
+private repositories. Missing access preserves normal review behavior. See
+[ADR 0005](docs/decisions/0005-carry-clean-review-across-base-sync.md), including
+the consumer-policy changes needed before accepting carried statuses.
+
+Abbreviated receipt labels only cross-check the summary's full SHA; no mutable
+Git ref lookup is used. A non-clean formal completion cannot bind a later bare
+reaction. Missing, malformed, conflicting, running, or non-clean metadata supplies
+no binding. Only the Code Review row timestamps its completion; unrelated board
+edits cannot refresh an old signal. The receipt may precede that completion, so
+the earlier of both timestamps determines freshness without a grace interval.
+Direct binding uses existing review/comment reads and needs no extra Contents
+permission; that permission is only for the optional Git proof.
+
+Deployment note: older short receipts without versioned full-head metadata need
+a fresh review unless independent full-SHA clean evidence exists, even with
+carry disabled. Manual requests in PRs #12/#14 produced receipts; automatic
+ready in PR #13 produced only a summary and `+1`. These observations are not
+general lifecycle guarantees.
 
 리뷰가 진행 중일 때는 정해둔 봇이 PR 본문이나 최신 리뷰 요청 코멘트에 `eyes` 반응을 남기면
 표시가 `pending`이 됩니다. 이때 표시 문구는 특정 봇 이름을 박지 않고 이렇게 나갑니다.
@@ -82,8 +150,9 @@ PR이 merge되어 base 브랜치가 바뀌면, 구독 중인 `pull_request` 종�
 최신 코드에 대한 리뷰를 요청해 둔 PR도 봇이 응답할 때까지 실패가 아니라 `pending`으로 둡니다.
 요청이란 PR 생성, 초안(draft)의 리뷰 준비 완료 전환, 리뷰 요청 코멘트를 말합니다.
 기다리는 시간은 `REVIEW_START_WINDOW_MS`(기본 20분)까지이고, 그 뒤에도 응답이 없으면
-실패로 표시합니다. Codex가 리뷰를 시작할 때 만들고 이후 계속 고쳐 쓰는 요약 코멘트는 봇의
-응답으로 보지 않습니다.
+실패로 표시합니다.
+The summary may first appear at review start or after completion and be edited
+in place; it never counts as the bot's response.
 
 `Review requested for the latest head; waiting for the review bot.`
 
@@ -120,6 +189,7 @@ GitHub에서 내 계정이나 조직(organization) 아래에 새 GitHub 앱을 �
 | Commit statuses | Read and write | PR에 통과/실패 표시를 직접 써야 해서요. |
 | Pull requests | Read-only | PR 상태와 리뷰, 코멘트, 리뷰 대화를 읽으려고요. |
 | Issues | Read-only | PR에 달리는 코멘트를 받고 PR 본문 반응을 읽으려고요. GitHub는 PR 코멘트와 PR 본문을 내부적으로 이슈로 다룹니다. |
+| Contents (optional base-sync carry) | Read-only | To read base-sync refs, comparisons, commits, and complete trees. Direct review binding needs no additional permission. |
 | Actions (선택 기능인 CI 예산) | `report`는 Read-only, `cancel`은 Read and write | 워크플로 실행 시도와 작업 시간을 읽고, 취소 모드에서는 실행 취소를 요청하려고요. |
 
 다음으로 **받을 알림(Subscribe to events)**에서 아래 다섯 개를 체크하세요.
@@ -326,17 +396,18 @@ API 요청이 정확히 한 번만 전송된다고 보장하지는 않습니다.
 | 설정값 | 기본값 | 의미 |
 | --- | --- | --- |
 | `STATUS_CONTEXT` | `review-gate/codex-clean` | PR에 다는 표시의 이름 |
+| `BASE_SYNC_REVIEW_ENABLED` | absent/false (disabled) | Only explicit `true` enables verified base-sync carry. Private Git proof needs owner-approved Contents read; direct review hardening always applies. |
 | `CI_BUDGET_MINUTES` | 없음(꺼짐) | 양의 십진수 분 단위 예산. 밀리초 단위까지 표현할 수 있으며 모든 설치 저장소에 같은 값을 적용합니다. |
 | `CI_BUDGET_MODE` | `report` | `report`는 상태만 기록하고, `cancel`은 승인된 Actions 쓰기 권한이 있을 때 초과 실행 취소도 요청합니다. 다른 값은 기능을 끕니다. |
 | `CI_BUDGET_STATUS_CONTEXT` | `review-gate/ci-budget` | 별도 예산 상태 이름. 비어 있거나 대소문자를 무시했을 때 실제 적용되는 `STATUS_CONTEXT`와 같으면 안 됩니다. 같으면 예산 기능을 끄고 오류를 기록합니다. 여러 배포가 같은 저장소에 예산을 적용한다면 배포마다 다른 이름을 쓰세요. |
 | `SWEEP_MAX_CI_RUNS` | `2` | sweep 한 번에서 평가할 실행 시도 수의 양의 정수 상한. 두 리뷰 예산과 별도입니다. |
-| `REVIEW_BOT_LOGINS` | `chatgpt-codex-connector,chatgpt-codex-connector[bot]` | 통과로 인정할 봇 계정 목록 (쉼표로 구분) |
-| `CLEAN_REVIEW_TEXT` | `Codex Review: Didn't find any major issues.` | 통과로 인정할 문구 |
-| `CLEAN_REACTION_CONTENT` | `+1` | 통과로 인정할 PR 본문 반응 |
+| `REVIEW_BOT_LOGINS` | `chatgpt-codex-connector,chatgpt-codex-connector[bot]` | Configured Bot logins (comma-separated); clean evidence also requires full-head binding. |
+| `CLEAN_REVIEW_TEXT` | `Codex Review: Didn't find any major issues.` | Clean marker in a full-SHA review/receipt or separately metadata-bound comment. |
+| `CLEAN_REACTION_CONTENT` | `+1` | PR-body clean signal requiring same-actor completed clean full-head Code Review metadata. |
 | `REVIEW_IN_PROGRESS_REACTION_CONTENT` | `eyes` | 최신 코드를 리뷰 중이라고 볼 반응 |
 | `REVIEW_REQUEST_TEXT` | `@codex review` | PR 본문 반응이 최신인지 판단할 때 쓰는 리뷰 요청 문구 |
-| `REVIEW_STATUS_BOARD_MARKER` | `<!-- codex-pull-request-review-summary -->` | 봇의 요약 코멘트 표시. 이 코멘트는 리뷰 응답으로 보지 않습니다 |
-| `REVIEW_START_WINDOW_MS` | `1200000` | 최신 코드에 요청된 리뷰를 봇 응답 없이 `pending`으로 기다리는 시간 |
+| `REVIEW_STATUS_BOARD_MARKER` | `<!-- codex-pull-request-review-summary -->` | Live summary marker; versioned metadata can bind a separate signal, but the summary is never a response itself. |
+| `REVIEW_START_WINDOW_MS` | `1200000` | Pending wait without a response; also bounds verification of an unbound result with surviving `eyes`. Expiry never proves completion. |
 | `SETTLED_DISPOSITION_LOGINS` | 비어 있음(꺼짐) | exact head/base settled disposition을 증명할 수 있는 GitHub 사람 계정 목록(쉼표 구분) |
 | `REVIEW_START_RETRY_DELAY_MS` | `15000` | PR 생성/리뷰 요청 직후 늦게 붙는 `eyes`를 다시 확인하기 전 기다리는 시간 |
 | `REVIEW_PENDING_RETRY_INTERVAL_MS` | `7000` | 진행 중 리뷰에서 선택적 웹훅 내부 재확인 사이에 기다리는 시간 |
@@ -404,13 +475,14 @@ CI 예산을 켜면 별도의 KV 목록 조회(sweep마다 최대 1,000개씩 10
 
 ### Codex는 통과라는데 계속 실패로 떠요
 
-- 통과 코멘트가 가장 최근 코드를 올린 "뒤"에 달렸나요? 그 전에 달린 건 인정 안 돼요.
-- PR 본문의 `+1` 반응을 쓰는 경우, 그 반응이 최신 코드 업데이트와 최신 `@codex review`
-  요청 뒤에 만들어졌나요?
+- Does the clean review identify the full current head, independently or through
+  matching completed Code Review metadata from the same numeric Bot actor?
+- A bare `+1` and Git commit dates cannot prove that binding. Check for newer
+  requests, findings, or active reviews.
 - 봇이 아직 리뷰 중이라면 PR 본문이나 최신 리뷰 요청 코멘트에 정해둔 봇의 최신 `eyes`
   반응이 있나요? 이 경우 실패가 아니라 진행 중으로 보여야 합니다.
-- 봇이 PR 본문 `+1`만 남기는 경우라면 다음 예약 sweep을 잠시 기다려보세요.
-  GitHub는 그 반응만으로 별도 알림을 보내지 않습니다.
+- For a PR-body `+1` with matching completed clean full-head metadata, wait
+  for the next scheduled sweep. GitHub sends no reaction webhook.
 - 아직 안 끝난 리뷰 대화가 남아 있진 않나요?
 - GitHub 앱 설정의 **Advanced > Recent deliveries**에 그 코멘트가 달린 시각의
   이슈 코멘트 알림이 도착해 있나요?

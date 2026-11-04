@@ -289,6 +289,12 @@ export async function listInstallationRepositories(token, options = {}) {
   }
 }
 
+function requireFullObjectSha(value) {
+  if (typeof value !== "string" || !/^[0-9a-f]{40}$/.test(value)) {
+    throw new Error("Git evidence requires a full lowercase 40-character object SHA");
+  }
+}
+
 export class RepoClient {
   constructor(token, owner, repo, statusContext) {
     this.token = token;
@@ -302,6 +308,36 @@ export class RepoClient {
       this.token,
       "GET",
       `/repos/${this.owner}/${this.repo}/pulls/${prNumber}`,
+    );
+  }
+
+  branchRef(ref) {
+    return githubFetch(
+      this.token, "GET",
+      `/repos/${this.owner}/${this.repo}/git/ref/heads/` + encodeURIComponent(ref),
+    );
+  }
+
+  gitCommit(sha) {
+    requireFullObjectSha(sha);
+    return githubFetch(
+      this.token, "GET", `/repos/${this.owner}/${this.repo}/git/commits/${sha}`,
+    );
+  }
+
+  compareCommits(base, head) {
+    requireFullObjectSha(base);
+    requireFullObjectSha(head);
+    return githubFetch(
+      this.token, "GET",
+      `/repos/${this.owner}/${this.repo}/compare/${base}...${head}?per_page=100&page=1`,
+    );
+  }
+
+  gitTree(sha) {
+    requireFullObjectSha(sha);
+    return githubFetch(
+      this.token, "GET", `/repos/${this.owner}/${this.repo}/git/trees/${sha}?recursive=1`,
     );
   }
 

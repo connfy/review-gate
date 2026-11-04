@@ -124,7 +124,7 @@ export function shouldIgnoreEvent(eventName, payload, config) {
     return true;
   }
 
-  const { cleanText, botLogins, reviewRequestText } = resolveConfig(config);
+  const { botLogins, reviewRequestText } = resolveConfig(config);
   const author = loginFor(payload?.comment?.user);
   const action = String(payload?.action ?? "");
   const body = String(payload?.comment?.body ?? "");
@@ -140,7 +140,9 @@ export function shouldIgnoreEvent(eventName, payload, config) {
   }
 
   if (action === "created") {
-    return !body.includes(cleanText);
+    // A non-clean bot response can invalidate a carried review. It must wake
+    // evaluation just as a clean response does, rather than wait for a sweep.
+    return false;
   }
 
   // A clean-pass comment should not normally be edited or deleted, but if the
