@@ -227,10 +227,11 @@ The ordinary manual settings flow needs no callback service or secret exchange:
    Never paste a PEM or inference key into an agent conversation.
 7. For Review Gate, configure non-secret `API_REVIEW_BOT_LOGIN` and
    `API_REVIEW_BOT_ID`; optionally `API_REVIEW_CLEAN_TEXT` (must match the runner).
-   Preserve remotely configured identity vars when deploying (for example,
-   `wrangler deploy --keep-vars` under the authorized deployment procedure), or
-   manage them in that deployment's own config. Do not copy one owner's reviewer
-   identity into every deployment of this reusable gate. If request text or
+   A Git-connected deployment (Workers Builds) replaces dashboard vars with the
+   `wrangler.toml` `[vars]` on every build, so keep the identity there; the
+   connfy deployment does (2026-11-17: a manual `--var` deploy was overwritten by
+   the main build 12 seconds later). A fork replaces those two values with its
+   own App bot or deletes them. If request text or
    legacy bot logins differ from defaults, mirror `REVIEW_REQUEST_TEXT` and
    `REVIEW_BOT_LOGINS` in the runner env so the shared boundary gets identical
    configuration.

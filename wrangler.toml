@@ -25,9 +25,14 @@ STATUS_CONTEXT = "review-gate/codex-clean"
 # Configure these in your deployment's vars; do not store credentials here.
 # Comma-separated bot login(s) whose clean review counts as a pass.
 REVIEW_BOT_LOGINS = "chatgpt-codex-connector,chatgpt-codex-connector[bot]"
-# API-credit reviewer is separately opt-in: configure API_REVIEW_BOT_LOGIN and
-# API_REVIEW_BOT_ID in the deployment after creating/verifying that App.
-# Do not add it to REVIEW_BOT_LOGINS. See docs/api-credit-reviewer.md.
+# API-credit reviewer (opt-in; docs/api-credit-reviewer.md). This deployment is
+# built by Workers Builds from main, and each build replaces dashboard vars with
+# these, so the identity lives here. Values are this deployment's
+# connfy-api-reviewer App bot (public, non-secret); a fork deletes or replaces
+# them. Missing or malformed values disable the API-credit path.
+# Do not add it to REVIEW_BOT_LOGINS.
+API_REVIEW_BOT_LOGIN = "connfy-api-reviewer[bot]"
+API_REVIEW_BOT_ID = "357773408"
 # Substring that marks a clean review from the bot above.
 CLEAN_REVIEW_TEXT = "Codex Review: Didn't find any major issues."
 # PR body reaction content that marks a clean review from the bot above.
