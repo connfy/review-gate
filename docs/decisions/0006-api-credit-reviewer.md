@@ -60,8 +60,9 @@ formal submitted exact-head Reviews, not legacy comments or reactions.
   review semantics and branch/CI/settlement freshness rules.
 - Repository authorization is independent of App installation scope. The
   coordinator reported the owner's all-connfy installation decision on
-  2026-11-17; the runner still defaults to only the two AimStrings repositories,
-  enforcing an explicit configurable allowlist before credentials/network/model
+  2026-11-17; the owner then asked that every connfy repository may use it, so the
+  runner defaults to the `connfy` account (configurable owner and repository
+  allowlists), enforcing that allowlist before credentials/network/model
   work and again at controller/publisher boundaries.
 
 ## Alternatives

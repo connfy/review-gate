@@ -47,10 +47,11 @@ Drafts may be dry-run reviewed but cannot be published by this command. There
 is no historical SHA override, request-comment watcher, background daemon,
 automatic retry, or `@codex review` comment emission.
 
-`API_REVIEW_ALLOWED_REPOS` is the runner's exact, comma-separated repository
-allowlist. Absent configuration defaults to **only** `connfy/aimstrings-docs`
-and `connfy/aimstrings-web`; an empty list, wildcard or malformed entry is an
-error. The CLI rejects other repos before reading App credentials, accessing
+`API_REVIEW_ALLOWED_OWNERS` (comma-separated account names, default `connfy`)
+admits every repository of those accounts; `API_REVIEW_ALLOWED_REPOS` adds exact
+repositories (owner, 2026-11-17: all connfy repositories may use the reviewer).
+Wildcards or malformed entries are errors; an empty owner list admits only the
+listed repositories. The CLI rejects other repos before reading App credentials, accessing
 GitHub or starting inference. The controller/publisher also enforce the same
 list. An owner-approved additional repository must be explicitly named in this
 config; an all-repositories App installation never broadens it implicitly.

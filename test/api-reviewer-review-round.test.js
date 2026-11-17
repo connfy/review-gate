@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { CLEAN_TEXT, changedLinesFromDiff, validateReview, reviewPayload, parseNativeResult } from "../scripts/reviewer/contract.mjs";
-import { allowedRepositories, assertAllowedRepository, DEFAULT_ALLOWED_REPOS } from "../scripts/reviewer/config.mjs";
+import { allowedOwners, allowedRepositories, assertAllowedRepository, DEFAULT_ALLOWED_OWNERS } from "../scripts/reviewer/config.mjs";
 import { parseArgs } from "../scripts/review-pr.mjs";
 import { publicationReceiptKey, reviewAndPublish } from "../scripts/reviewer/controller.mjs";
 import { publishReview, isPublishedReview, reviewCycle } from "../scripts/reviewer/github.mjs";
@@ -189,28 +189,35 @@ test("F4: forged response or a later review start cannot terminate in-progress a
   assert.equal(evaluateGate(settlement({ laterEyes: true })).state, "pending");
 });
 
-test("allowlist defaults to exactly the two AimStrings repos, not the all-repo installation", () => {
-  assert.deepEqual([...allowedRepositories({})], DEFAULT_ALLOWED_REPOS);
-  for (const other of ["connfy/review-gate", "connfy/release-hub", "else/aimstrings-web"]) {
-    assert.throws(() => assertAllowedRepository(other, {}), /not allowed/);
-    assert.throws(() => parseArgs([other, "1", "--publish"], {}), /not allowed/);
-    assert.throws(() => parseArgs([other, "1"], {}), /not allowed/);
+test("allowlist defaults to every connfy repository and nothing else", () => {
+  assert.deepEqual([...allowedOwners({})], DEFAULT_ALLOWED_OWNERS);
+  assert.deepEqual([...allowedRepositories({})], []);
+  for (const ok of ["connfy/aimstrings-web", "connfy/review-gate", "Connfy/release-hub"]) {
+    assert.doesNotThrow(() => assertAllowedRepository(ok, {}));
   }
+  for (const other of ["else/aimstrings-web", "connfy-x/repo", "connfy/..", "connfy"]) {
+    assert.throws(() => assertAllowedRepository(other, {}), /not allowed/);
+    assert.throws(() => parseArgs([other, "1", "--publish"], {}), /not allowed|Usage/);
+  }
+  const narrowed = { API_REVIEW_ALLOWED_OWNERS: "", API_REVIEW_ALLOWED_REPOS: "connfy/aimstrings-web" };
+  assert.doesNotThrow(() => assertAllowedRepository("connfy/aimstrings-web", narrowed));
+  assert.throws(() => assertAllowedRepository("connfy/review-gate", narrowed), /not allowed/);
+  assert.throws(() => allowedOwners({ API_REVIEW_ALLOWED_OWNERS: "conn*" }), /without wildcards/);
 });
 test("allowlist requires explicit config for another repo; empty/wildcard config never broadens it", () => {
-  const env = { API_REVIEW_ALLOWED_REPOS: "connfy/review-gate" };
-  assert.doesNotThrow(() => assertAllowedRepository("connfy/review-gate", env));
+  const env = { API_REVIEW_ALLOWED_OWNERS: "", API_REVIEW_ALLOWED_REPOS: "else/review-gate" };
+  assert.doesNotThrow(() => assertAllowedRepository("else/review-gate", env));
   assert.throws(() => assertAllowedRepository(repo, env), /not allowed/);
   for (const bad of ["", "*", "connfy/*", "../..", "connfy/aimstrings-web,"]) assert.throws(() => allowedRepositories({ API_REVIEW_ALLOWED_REPOS: bad }));
 });
 test("publisher rejects a forbidden repo before any API access", async () => {
   let contacted = false;
-  await assert.rejects(publishReview({ snapshot: { ...snapshot, repo: "connfy/review-gate" }, api: () => { contacted = true; }, identity, payload: reviewPayload(snapshot, clean()) }), /not allowed/);
+  await assert.rejects(publishReview({ snapshot: { ...snapshot, repo: "else/review-gate" }, api: () => { contacted = true; }, identity, payload: reviewPayload(snapshot, clean()) }), /not allowed/);
   assert.equal(contacted, false);
 });
 test("controller rejects a forbidden repo before inference or artifact publication", async () => {
   let reviewed = false;
-  await assert.rejects(reviewAndPublish({ snapshot: { ...snapshot, repo: "connfy/review-gate" }, performReview: () => { reviewed = true; } }), /not allowed/);
+  await assert.rejects(reviewAndPublish({ snapshot: { ...snapshot, repo: "else/review-gate" }, performReview: () => { reviewed = true; } }), /not allowed/);
   assert.equal(reviewed, false);
 });
 for (const absentLedger of [false, true]) test(`partial native usage survives ${absentLedger ? "missing" : "failed"} wrapper receipt`, async (t) => {
