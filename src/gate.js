@@ -7,6 +7,9 @@
 // reviewer, not just Codex.
 
 export const DEFAULT_CLEAN_TEXT = "Codex Review: Didn't find any major issues.";
+export const DEFAULT_API_REVIEW_CLEAN_TEXT =
+  "API Credit Codex Review: No actionable P0–P2 findings.";
+export const API_REVIEW_BODY_BLOCKERS_HEADING = "### Blocking findings outside the inline diff";
 export const DEFAULT_CLEAN_REACTION_CONTENT = "+1";
 export const DEFAULT_IN_PROGRESS_REACTION_CONTENT = "eyes";
 export const DEFAULT_REVIEW_REQUEST_TEXT = "@codex review";
@@ -36,17 +39,30 @@ export const NO_CLEAN_REVIEW_DESCRIPTION =
 const HEAD_REF_EVENTS = new Set(["head_ref_force_pushed", "head_ref_restored"]);
 
 export function resolveConfig(config = {}) {
+  // This App is NOT a legacy login-only bot: only a formal exact-head Review
+  // from its pinned numeric Bot identity can attest a clean result.
+  const apiReviewBotLogin = String(config.apiReviewBotLogin ?? "").trim();
+  const apiReviewBotId = String(config.apiReviewBotId ?? "");
+  const apiReviewCleanText = config.apiReviewCleanText ?? DEFAULT_API_REVIEW_CLEAN_TEXT;
+  const apiReviewer = apiReviewBotLogin && /^[1-9][0-9]*$/.test(apiReviewBotId) &&
+    Number.isSafeInteger(Number(apiReviewBotId)) &&
+    typeof apiReviewCleanText === "string" && apiReviewCleanText.trim()
+    ? { login: apiReviewBotLogin, id: apiReviewBotId, cleanText: apiReviewCleanText }
+    : null;
   return {
+    apiReviewBotLogin,
+    apiReviewBotId,
+    apiReviewCleanText,
+    apiReviewer,
     cleanText: config.cleanText ?? DEFAULT_CLEAN_TEXT,
     cleanReactionContent:
       config.cleanReactionContent ?? DEFAULT_CLEAN_REACTION_CONTENT,
     inProgressReactionContent:
       config.inProgressReactionContent ?? DEFAULT_IN_PROGRESS_REACTION_CONTENT,
     reviewRequestText: config.reviewRequestText ?? DEFAULT_REVIEW_REQUEST_TEXT,
-    botLogins:
-      config.botLogins instanceof Set
-        ? config.botLogins
-        : new Set(config.botLogins ?? DEFAULT_BOT_LOGINS),
+    botLogins: new Set(
+      [...(config.botLogins ?? DEFAULT_BOT_LOGINS)].filter((login) => login !== apiReviewBotLogin),
+    ),
     settledDispositionLogins:
       config.settledDispositionLogins instanceof Set
         ? config.settledDispositionLogins
@@ -62,6 +78,32 @@ export function resolveConfig(config = {}) {
         ? config.reviewStartWindowMs
         : DEFAULT_REVIEW_START_WINDOW_MS,
   };
+}
+
+function apiReviewQualifies(review, sha, config) {
+  const { apiReviewer } = resolveConfig(config);
+  if (!apiReviewer || !/^[0-9a-f]{40}$/.test(sha)) return false;
+  const stamp = String(review?.body ?? "").match(/^<!-- api-credit-review:v1 head=([0-9a-f]{40}) base=([0-9a-f]{40}) -->\n/);
+  return review?.user?.login === apiReviewer.login &&
+    String(review?.user?.id) === apiReviewer.id && review?.user?.type === "Bot" &&
+    review?.state === "COMMENTED" && review?.commit_id === sha &&
+    parseTimestamp(review?.submitted_at) !== null &&
+    stamp?.[1] === sha;
+}
+
+function latestApiBodyBlocker(reviews, sha, config) {
+  let latest = null;
+  for (const review of reviews) {
+    if (!apiReviewQualifies(review, sha, config)) continue;
+    const lines = String(review.body ?? "").split("\n");
+    // These are publisher-owned v1 protocol lines, not model prose (which is
+    // quoted). Recognize already-published v1 summaries without a new marker.
+    if (!lines.includes(API_REVIEW_BODY_BLOCKERS_HEADING) ||
+        !lines.some((line) => /^API Credit Codex Review: [1-9]\d* actionable P0–P2 finding\(s\)\.$/.test(line))) continue;
+    const timestamp = parseTimestamp(review.submitted_at);
+    if (latest === null || timestamp > latest.timestamp) latest = { timestamp };
+  }
+  return latest;
 }
 
 function loginFor(user) {
@@ -231,6 +273,16 @@ function latestReviewRequestTime(issueComments, timelineEvents, config) {
   }
 
   return latest;
+}
+
+// Shared with the local publisher: deduplication must expire at exactly the
+// same server/request boundary that expires this App's gate authority.
+export function apiReviewBoundaryTime({ prCreatedAt, issueComments = [], timelineEvents = [], config }) {
+  const times = [
+    latestServerHeadBoundaryTime(timelineEvents, prCreatedAt),
+    latestReviewRequestTime(issueComments, timelineEvents, config),
+  ].filter((time) => time !== null);
+  return times.length ? Math.max(...times) : null;
 }
 
 function latestReviewRequestComment(issueComments, timelineEvents, config) {
@@ -509,8 +561,8 @@ function latestReviewBotResponseTime({
   for (const review of reviews) {
     const author = loginFor(review?.user);
     if (
-      botLogins.has(author) &&
-      String(review?.commit_id ?? "") === sha
+      (botLogins.has(author) && String(review?.commit_id ?? "") === sha) ||
+      apiReviewQualifies(review, sha, config)
     ) {
       updateLatest(parseTimestamp(review?.submitted_at));
     }
@@ -642,7 +694,8 @@ function settledDisposition({
     }
     const hasQualifyingReview = reviews.some(
       (review) =>
-        resolved.botLogins.has(loginFor(review?.user)) &&
+        (resolved.botLogins.has(loginFor(review?.user)) ||
+          apiReviewQualifies(review, sha, resolved)) &&
         String(review?.state ?? "").toLowerCase() !== "dismissed" &&
         String(review?.commit_id ?? "") === sha &&
         parseTimestamp(review?.submitted_at) > anchorTime &&
@@ -801,6 +854,7 @@ export function summarizeFailureDetails(details) {
 
 export function codexCleanEvents({
   sha,
+  prCreatedAt,
   issueComments = [],
   issueReactions = [],
   reviews = [],
@@ -838,6 +892,14 @@ export function codexCleanEvents({
       String(review?.commit_id ?? "") === sha
     ) {
       cleanEvents.push(`clean review body at ${submittedAt}`);
+    }
+    const resolved = resolveConfig(config);
+    if (apiReviewQualifies(review, sha, resolved) &&
+        body.split("\n").includes(resolved.apiReviewer.cleanText)) {
+      const boundary = apiReviewBoundaryTime({ prCreatedAt, timelineEvents, issueComments, config: resolved });
+      if (boundary !== null && parseTimestamp(submittedAt) > boundary) {
+        cleanEvents.push(`API-credit review body at ${submittedAt}`);
+      }
     }
   }
 
@@ -957,14 +1019,16 @@ export function evaluateGate({
 
   const cleanEvents = codexCleanEvents({
     sha,
+    prCreatedAt: pr?.created_at,
     issueComments,
     issueReactions,
     reviews,
     timelineEvents,
     config: resolved,
   });
+  const bodyBlocker = latestApiBodyBlocker(reviews, sha, resolved);
   let disposition = null;
-  if (cleanEvents.length === 0) {
+  if (cleanEvents.length === 0 || bodyBlocker !== null) {
     disposition = settledDisposition({
       sha,
       baseSha,
@@ -976,9 +1040,16 @@ export function evaluateGate({
       timelineEvents,
       config: resolved,
     });
+    // An earlier clean signal/attestation does not resolve newer body findings,
+    // just as it cannot resolve an outstanding current inline thread.
+    if (bodyBlocker !== null && disposition !== null &&
+        disposition.timestamp <= bodyBlocker.timestamp) disposition = null;
     if (disposition !== null) {
       cleanEvents.push(disposition.detail);
     }
+  }
+  if (bodyBlocker !== null && disposition === null) {
+    details.push("Unsettled body-only P0–P2 findings in the API-credit review.");
   }
   if (cleanEvents.length === 0) {
     const inProgressEvents = reviewInProgressEvents({

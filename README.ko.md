@@ -331,6 +331,9 @@ API 요청이 정확히 한 번만 전송된다고 보장하지는 않습니다.
 | `CI_BUDGET_STATUS_CONTEXT` | `review-gate/ci-budget` | 별도 예산 상태 이름. 비어 있거나 대소문자를 무시했을 때 실제 적용되는 `STATUS_CONTEXT`와 같으면 안 됩니다. 같으면 예산 기능을 끄고 오류를 기록합니다. 여러 배포가 같은 저장소에 예산을 적용한다면 배포마다 다른 이름을 쓰세요. |
 | `SWEEP_MAX_CI_RUNS` | `2` | sweep 한 번에서 평가할 실행 시도 수의 양의 정수 상한. 두 리뷰 예산과 별도입니다. |
 | `REVIEW_BOT_LOGINS` | `chatgpt-codex-connector,chatgpt-codex-connector[bot]` | 통과로 인정할 봇 계정 목록 (쉼표로 구분) |
+| `API_REVIEW_BOT_LOGIN` | 없음(꺼짐) | API 크레딧 리뷰 전용 App의 정확한 Bot 로그인. 숫자 ID와 함께 설정하며 기존 로그인 목록에 추가하지 않습니다. |
+| `API_REVIEW_BOT_ID` | 없음(꺼짐) | 전용 Bot의 숫자 사용자 ID. App ID나 설치 ID가 아닙니다. |
+| `API_REVIEW_CLEAN_TEXT` | `API Credit Codex Review: No actionable P0–P2 findings.` | 전용 App의 최신 커밋에 연결된 정식 Review에서만 인정하는 독립된 통과 문구. 로컬 실행기와 일치해야 합니다. |
 | `CLEAN_REVIEW_TEXT` | `Codex Review: Didn't find any major issues.` | 통과로 인정할 문구 |
 | `CLEAN_REACTION_CONTENT` | `+1` | 통과로 인정할 PR 본문 반응 |
 | `REVIEW_IN_PROGRESS_REACTION_CONTENT` | `eyes` | 최신 코드를 리뷰 중이라고 볼 반응 |

@@ -74,6 +74,9 @@ function configFromEnv(env) {
     : undefined;
   return resolveConfig({
     cleanText: env.CLEAN_REVIEW_TEXT,
+    apiReviewBotLogin: env.API_REVIEW_BOT_LOGIN,
+    apiReviewBotId: env.API_REVIEW_BOT_ID,
+    apiReviewCleanText: env.API_REVIEW_CLEAN_TEXT,
     cleanReactionContent: env.CLEAN_REACTION_CONTENT,
     inProgressReactionContent: env.REVIEW_IN_PROGRESS_REACTION_CONTENT,
     reviewRequestText: env.REVIEW_REQUEST_TEXT,
