@@ -25,6 +25,9 @@ STATUS_CONTEXT = "review-gate/codex-clean"
 # Configure these in your deployment's vars; do not store credentials here.
 # Comma-separated bot login(s) whose clean review counts as a pass.
 REVIEW_BOT_LOGINS = "chatgpt-codex-connector,chatgpt-codex-connector[bot]"
+# API-credit reviewer is separately opt-in: configure API_REVIEW_BOT_LOGIN and
+# API_REVIEW_BOT_ID in the deployment after creating/verifying that App.
+# Do not add it to REVIEW_BOT_LOGINS. See docs/api-credit-reviewer.md.
 # Substring that marks a clean review from the bot above.
 CLEAN_REVIEW_TEXT = "Codex Review: Didn't find any major issues."
 # PR body reaction content that marks a clean review from the bot above.

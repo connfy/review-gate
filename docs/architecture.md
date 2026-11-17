@@ -3,6 +3,18 @@
 Review Gate is a JavaScript Cloudflare Worker backed by one GitHub App and one
 Workers KV namespace.
 
+An optional local [API-credit reviewer](api-credit-reviewer.md) is a separate
+trusted controller/publisher, not a Worker inference task. It freezes a PR,
+runs the native Codex review engine in an isolated read-only source environment,
+validates the original structured review-session result, and posts one formal
+exact-head Review through a distinct GitHub App. The Worker trusts its paired
+login/numeric Bot identity only when explicitly configured; comments and
+reactions cannot substitute for its Review. The existing Worker remains the
+status writer and keeps draft/thread/freshness rules. Native-session usage is
+reconciled separately because the inspected CLI's outer review event stream
+reports zero tokens despite actual child usage. See
+[ADR 0006](decisions/0006-api-credit-reviewer.md).
+
 ## Module relationships
 
 - `src/index.js` owns the Worker entrypoints, GitHub orchestration, status

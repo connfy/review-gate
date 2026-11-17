@@ -1,0 +1,16 @@
+{
+  "name": "connfy-api-reviewer",
+  "url": "https://github.com/connfy/review-gate",
+  "description": "On-demand, API-funded native Codex PR reviews; Review Gate remains the status authority.",
+  "public": false,
+  "hook_attributes": {
+    "url": "https://example.invalid/api-reviewer-webhook-disabled",
+    "active": false
+  },
+  "default_permissions": {
+    "pull_requests": "write",
+    "contents": "read",
+    "metadata": "read"
+  },
+  "default_events": []
+}

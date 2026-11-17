@@ -7,6 +7,8 @@
 // reviewer, not just Codex.
 
 export const DEFAULT_CLEAN_TEXT = "Codex Review: Didn't find any major issues.";
+export const DEFAULT_API_REVIEW_CLEAN_TEXT =
+  "API Credit Codex Review: No actionable P0–P2 findings.";
 export const DEFAULT_CLEAN_REACTION_CONTENT = "+1";
 export const DEFAULT_IN_PROGRESS_REACTION_CONTENT = "eyes";
 export const DEFAULT_REVIEW_REQUEST_TEXT = "@codex review";
@@ -36,17 +38,30 @@ export const NO_CLEAN_REVIEW_DESCRIPTION =
 const HEAD_REF_EVENTS = new Set(["head_ref_force_pushed", "head_ref_restored"]);
 
 export function resolveConfig(config = {}) {
+  // This App is NOT a legacy login-only bot: only a formal exact-head Review
+  // from its pinned numeric Bot identity can attest a clean result.
+  const apiReviewBotLogin = String(config.apiReviewBotLogin ?? "").trim();
+  const apiReviewBotId = String(config.apiReviewBotId ?? "");
+  const apiReviewCleanText = config.apiReviewCleanText ?? DEFAULT_API_REVIEW_CLEAN_TEXT;
+  const apiReviewer = apiReviewBotLogin && /^[1-9][0-9]*$/.test(apiReviewBotId) &&
+    Number.isSafeInteger(Number(apiReviewBotId)) &&
+    typeof apiReviewCleanText === "string" && apiReviewCleanText.trim()
+    ? { login: apiReviewBotLogin, id: apiReviewBotId, cleanText: apiReviewCleanText }
+    : null;
   return {
+    apiReviewBotLogin,
+    apiReviewBotId,
+    apiReviewCleanText,
+    apiReviewer,
     cleanText: config.cleanText ?? DEFAULT_CLEAN_TEXT,
     cleanReactionContent:
       config.cleanReactionContent ?? DEFAULT_CLEAN_REACTION_CONTENT,
     inProgressReactionContent:
       config.inProgressReactionContent ?? DEFAULT_IN_PROGRESS_REACTION_CONTENT,
     reviewRequestText: config.reviewRequestText ?? DEFAULT_REVIEW_REQUEST_TEXT,
-    botLogins:
-      config.botLogins instanceof Set
-        ? config.botLogins
-        : new Set(config.botLogins ?? DEFAULT_BOT_LOGINS),
+    botLogins: new Set(
+      [...(config.botLogins ?? DEFAULT_BOT_LOGINS)].filter((login) => login !== apiReviewBotLogin),
+    ),
     settledDispositionLogins:
       config.settledDispositionLogins instanceof Set
         ? config.settledDispositionLogins
@@ -62,6 +77,17 @@ export function resolveConfig(config = {}) {
         ? config.reviewStartWindowMs
         : DEFAULT_REVIEW_START_WINDOW_MS,
   };
+}
+
+function apiReviewQualifies(review, sha, config) {
+  const { apiReviewer } = resolveConfig(config);
+  if (!apiReviewer || !/^[0-9a-f]{40}$/.test(sha)) return false;
+  const stamp = String(review?.body ?? "").match(/^<!-- api-credit-review:v1 head=([0-9a-f]{40}) base=([0-9a-f]{40}) -->\n/);
+  return review?.user?.login === apiReviewer.login &&
+    String(review?.user?.id) === apiReviewer.id && review?.user?.type === "Bot" &&
+    review?.state === "COMMENTED" && review?.commit_id === sha &&
+    parseTimestamp(review?.submitted_at) !== null &&
+    stamp?.[1] === sha;
 }
 
 function loginFor(user) {
@@ -642,7 +668,8 @@ function settledDisposition({
     }
     const hasQualifyingReview = reviews.some(
       (review) =>
-        resolved.botLogins.has(loginFor(review?.user)) &&
+        (resolved.botLogins.has(loginFor(review?.user)) ||
+          apiReviewQualifies(review, sha, resolved)) &&
         String(review?.state ?? "").toLowerCase() !== "dismissed" &&
         String(review?.commit_id ?? "") === sha &&
         parseTimestamp(review?.submitted_at) > anchorTime &&
@@ -801,6 +828,7 @@ export function summarizeFailureDetails(details) {
 
 export function codexCleanEvents({
   sha,
+  prCreatedAt,
   issueComments = [],
   issueReactions = [],
   reviews = [],
@@ -838,6 +866,17 @@ export function codexCleanEvents({
       String(review?.commit_id ?? "") === sha
     ) {
       cleanEvents.push(`clean review body at ${submittedAt}`);
+    }
+    const resolved = resolveConfig(config);
+    if (apiReviewQualifies(review, sha, resolved) &&
+        body.split("\n").includes(resolved.apiReviewer.cleanText)) {
+      const boundaries = [
+        latestServerHeadBoundaryTime(timelineEvents, prCreatedAt),
+        latestReviewRequestTime(issueComments, timelineEvents, resolved),
+      ].filter((time) => time !== null);
+      if (boundaries.length && parseTimestamp(submittedAt) > Math.max(...boundaries)) {
+        cleanEvents.push(`API-credit review body at ${submittedAt}`);
+      }
     }
   }
 
@@ -957,6 +996,7 @@ export function evaluateGate({
 
   const cleanEvents = codexCleanEvents({
     sha,
+    prCreatedAt: pr?.created_at,
     issueComments,
     issueReactions,
     reviews,

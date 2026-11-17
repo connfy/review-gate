@@ -114,6 +114,23 @@ on a priority sweep even when no comment/review webhook follows. A rotating scan
 of other open PRs remains as a fallback for signals that never entered the
 pending state.
 
+## Optional API-credit reviewer
+
+When hosted Codex review has exhausted plan usage, an on-demand local native
+Codex runner can review through the existing `codex-credit` wrapper and publish
+one exact-commit PR Review as a **separate dedicated GitHub App**. No Actions
+review runner is involved. Only actionable introduced P0–P2 findings open
+threads; P3/nits never do. A complete clean result gets a publisher-owned clean
+sentence; incomplete runs publish nothing. This path is opt-in, not active
+merely because the source is present.
+
+See [API-credit reviewer setup and runbook](docs/api-credit-reviewer.md) for the
+App manifest, key-path configuration, isolated runtime, token-accounting caveat,
+dry-run command and first-live-review acceptance. Set both `API_REVIEW_BOT_LOGIN`
+and its numeric **Bot user ID** in `API_REVIEW_BOT_ID`; do not append it to the
+legacy `REVIEW_BOT_LOGINS` list. Existing hosted review and status authority stay
+unchanged.
+
 ## Setup (quicker than it looks)
 
 Five steps total. Create a GitHub App → convert the key → deploy the Worker →
@@ -365,6 +382,9 @@ different reviewer bot or change the trigger text.
 | `CI_BUDGET_STATUS_CONTEXT` | `review-gate/ci-budget` | Separate budget status context; must be nonempty and different from the effective `STATUS_CONTEXT`, ignoring case. A collision disables budgeting and logs an error. If several deployments budget the same repository, give each its own context. |
 | `SWEEP_MAX_CI_RUNS` | `2` | Positive integer cap on due workflow attempts evaluated per sweep, separate from both review budgets. |
 | `REVIEW_BOT_LOGINS` | `chatgpt-codex-connector,chatgpt-codex-connector[bot]` | Bot logins whose clean pass counts (comma-separated). |
+| `API_REVIEW_BOT_LOGIN` | absent (disabled) | Dedicated API review App's exact Bot login; requires `API_REVIEW_BOT_ID`. Not a legacy comment/reaction authority. |
+| `API_REVIEW_BOT_ID` | absent (disabled) | Positive numeric **Bot user ID**, pinned alongside the login. Not the App ID/installation ID. |
+| `API_REVIEW_CLEAN_TEXT` | `API Credit Codex Review: No actionable P0–P2 findings.` | Standalone clean line for the dedicated App's submitted exact-head Review; must match the local runner. |
 | `CLEAN_REVIEW_TEXT` | `Codex Review: Didn't find any major issues.` | Text that marks a clean review pass. |
 | `CLEAN_REACTION_CONTENT` | `+1` | PR body reaction that marks a clean review pass. |
 | `REVIEW_IN_PROGRESS_REACTION_CONTENT` | `eyes` | Reaction that marks the latest head as currently under review. |
@@ -489,8 +509,9 @@ Files worth knowing when you poke around:
 
 - Security comes from guarding your secrets, not from hiding the source.
 - Webhooks are verified with `X-Hub-Signature-256` and `GITHUB_WEBHOOK_SECRET`.
-- A clean pass only counts when authored by a configured bot login — nobody can
-  sneak through by just copying the magic text.
+- Hosted clean passes require a configured bot login. The optional API reviewer
+  additionally pins a numeric Bot user ID and accepts only its submitted,
+  fresh exact-head formal Reviews, never its issue comments or reactions.
 - Never commit private keys or `.dev.vars`. If a secret ever lands in git history,
   rotate it immediately.
 
