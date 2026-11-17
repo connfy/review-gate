@@ -115,7 +115,9 @@ config; an all-repositories App installation never broadens it implicitly.
    only fully deleted files use LEFT coordinates. A blocking finding outside
    inline geometry is quoted in the Review body, without losing the finding or
    producing a clean signal. Model-authored body text cannot inject a standalone
-   clean line. P3 locations do not need inline anchors.
+   clean line. The gate treats the authenticated body-only blocker section as
+   outstanding negative evidence even if a hosted clean signal already exists.
+   P3 locations do not need inline anchors.
 7. Immediately before POST, re-fetch and require the same open, ready head/base
    and repository, and require the same freshness boundary. A push, base move
    or new request boundary during review aborts publication.
@@ -123,6 +125,14 @@ config; an all-repositories App installation never broadens it implicitly.
    base advance follows existing direct-hosted-review semantics; the provenance
    base is not a new forever-blocking base freshness rule. Existing branch/CI
    up-to-date requirements and settled-disposition pair checks remain intact.
+
+The App client retains GitHub's installation-token `expires_at`. Before every
+request it refreshes credentials if they will expire within the HTTP request's
+one-minute maximum lifetime, coalescing simultaneous refresh requests. Each
+refresh signs a fresh App JWT, so a completed review is not stranded by the
+one-hour installation-token or ten-minute JWT lifetime. Missing/invalid expiry
+or refresh failure aborts publication. No automatic retry of the original
+request is added, especially not of an ambiguous Review POST.
 
 Prompt injection and missed/overstated defects are still model limitations.
 Isolation separates model output from credentials and publication authority;
@@ -255,7 +265,13 @@ hosted `eyes` cycle for response/settlement purposes. Issue comments and
 reactions from this App never count. Drafts and unresolved current threads
 continue to fail. A human settlement may refer to its signed exact-head formal
 review under the existing settlement conditions; no new settlement author is
-authorized. Hosted Codex behavior is otherwise unchanged.
+authorized. An exact-head authenticated body-only P0–P2 section overrides clean
+signals until an authorized exact-head/base settlement newer than the latest
+blocking Review, or a head change. Re-requesting a review or receiving another
+clean signal does not silently close outstanding findings, just as it does not
+resolve an inline thread. Wrong actors/IDs/commit markers, dismissed Reviews and
+quoted model text cannot create these body blockers; P3-only results cannot
+create them either. Hosted Codex behavior is otherwise unchanged.
 
 ## Verification
 
@@ -267,7 +283,11 @@ Tests cover freeze/head races, no-post dry runs, artifact/review failures,
 identity and commit forgery, stale results, removed-line anchors, P0–P3 policy,
 native parser fallback, quota/interruption, atomic COMMENT payloads,
 deduplication, ambiguous POST failure and App authentication with a generated
-test-only private key. Live smoke and production acceptance evidence belong
+test-only private key. Mock-clock regressions cover one-hour inference and fresh
+JWT/token renewal, concurrent refresh, missing expiry and no Review POST retry.
+Gate regressions cover earlier hosted clean versus body blockers, P3-only clean,
+forged/stale evidence and authorized settlement ordering.
+Live smoke and production acceptance evidence belong
 in the build report, not in a unit-test claim.
 
 ## Sources and limits of parity
@@ -287,3 +307,8 @@ in the build report, not in a unit-test claim.
   documents explicit `commit_id` (omitting it defaults to the latest head) and
   review comments. Binding and publisher identity are our protocol, not an
   OpenAI clean-pass guarantee.
+- [Installation access tokens](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app)
+  expire after one hour and return `expires_at`.
+  [App JWTs](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app)
+  have a maximum ten-minute lifetime. The pre-request refresh and no-POST-retry
+  policy above are local implementation choices, not a GitHub retry guarantee.

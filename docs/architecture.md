@@ -19,7 +19,12 @@ The runner's explicit repository allowlist is independent of installation scope.
 Publisher receipts/deduplication and gate authority share the same freshness
 boundary, including same-head re-requests/restores. P3 never needs an inline
 anchor or a matching overall label to remain non-blocking; unanchorable P0–P2
-findings stay in the submitted Review body rather than being discarded.
+findings stay in the submitted Review body rather than being discarded. The
+gate recognizes those authenticated exact-head body blockers independently of
+clean signals. They remain outstanding until a later authorized exact-head/base
+settlement or a head change, like unresolved inline findings; P3 is unaffected.
+The publisher refreshes expiring installation credentials on demand with a
+fresh App JWT, without retrying any ambiguous Review POST.
 
 ## Module relationships
 

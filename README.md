@@ -120,8 +120,10 @@ When hosted Codex review has exhausted plan usage, an on-demand local native
 Codex runner can review through the existing `codex-credit` wrapper and publish
 one exact-commit PR Review as a **separate dedicated GitHub App**. No Actions
 review runner is involved. Only actionable introduced P0–P2 findings open
-threads; P3/nits never do. A complete clean result gets a publisher-owned clean
-sentence; incomplete runs publish nothing. This path is opt-in, not active
+threads; findings without an inline anchor remain blocking in the Review body,
+even alongside an earlier hosted clean signal. P3/nits never block. A complete
+clean result gets a publisher-owned clean sentence; incomplete runs publish
+nothing. This path is opt-in, not active
 merely because the source is present.
 
 See [API-credit reviewer setup and runbook](docs/api-credit-reviewer.md) for the

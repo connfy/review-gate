@@ -3,37 +3,59 @@ import { readFile } from "node:fs/promises";
 import { apiReviewBoundaryTime } from "../../src/gate.js";
 import { assertAllowedRepository, requestConfig } from "./config.mjs";
 
+const GITHUB_REQUEST_TIMEOUT_MS = 60_000;
+// Cover the bounded HTTP request lifetime so credentials do not expire while
+// a publication read/write is in flight. Refresh on demand, not on a timer.
+const TOKEN_REFRESH_MARGIN_MS = GITHUB_REQUEST_TIMEOUT_MS;
+
 export function githubClient(token, fetcher = fetch) {
   return async (endpoint, { method = "GET", body } = {}) => {
     const response = await fetcher(`https://api.github.com${endpoint}`, {
       method, headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}`, "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json", "User-Agent": "connfy-api-reviewer" },
       ...(body ? { body: JSON.stringify(body) } : {}),
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) throw new Error(`GitHub ${method} ${endpoint}: HTTP ${response.status}`);
     return response.json();
   };
 }
 
-export async function appClient(env = process.env, fetcher = fetch) {
+export async function appClient(env = process.env, fetcher = fetch, { now = Date.now } = {}) {
   for (const key of ["API_REVIEW_APP_ID", "API_REVIEW_INSTALLATION_ID", "API_REVIEW_PRIVATE_KEY_PATH", "API_REVIEW_BOT_LOGIN", "API_REVIEW_BOT_ID"]) {
     if (!env[key]) throw new Error(`Missing ${key}`);
   }
   for (const key of ["API_REVIEW_APP_ID", "API_REVIEW_INSTALLATION_ID", "API_REVIEW_BOT_ID"]) {
     if (!/^[1-9][0-9]*$/.test(env[key])) throw new Error(`Invalid ${key}`);
   }
-  const now = Math.floor(Date.now() / 1000);
   const b64 = (v) => Buffer.from(JSON.stringify(v)).toString("base64url");
-  const unsigned = `${b64({ alg: "RS256", typ: "JWT" })}.${b64({ iat: now - 60, exp: now + 540, iss: env.API_REVIEW_APP_ID })}`;
   const privateKey = createPrivateKey(await readFile(env.API_REVIEW_PRIVATE_KEY_PATH));
-  const jwt = `${unsigned}.${sign("RSA-SHA256", Buffer.from(unsigned), privateKey).toString("base64url")}`;
-  const auth = githubClient(jwt, fetcher);
-  const app = await auth("/app");
-  const { token } = await auth(`/app/installations/${env.API_REVIEW_INSTALLATION_ID}/access_tokens`, {
-    method: "POST", body: { permissions: { contents: "read", pull_requests: "write" } },
-  });
-  if (typeof token !== "string" || !token.trim()) throw new Error("Missing App installation token");
-  const api = githubClient(token, fetcher);
+  const appAuth = () => {
+    const seconds = Math.floor(now() / 1000);
+    const unsigned = `${b64({ alg: "RS256", typ: "JWT" })}.${b64({ iat: seconds - 60, exp: seconds + 540, iss: env.API_REVIEW_APP_ID })}`;
+    const jwt = `${unsigned}.${sign("RSA-SHA256", Buffer.from(unsigned), privateKey).toString("base64url")}`;
+    return githubClient(jwt, fetcher);
+  };
+  const app = await appAuth()("/app");
+  let installationApi, expiresAt = 0, refreshing;
+  const refresh = async () => {
+    // A long inference also outlives the original App JWT; sign a fresh one.
+    const receipt = await appAuth()(`/app/installations/${env.API_REVIEW_INSTALLATION_ID}/access_tokens`, {
+      method: "POST", body: { permissions: { contents: "read", pull_requests: "write" } },
+    });
+    if (typeof receipt.token !== "string" || !receipt.token.trim()) throw new Error("Missing App installation token");
+    const expiry = Date.parse(receipt.expires_at);
+    if (!Number.isFinite(expiry) || expiry <= now() + TOKEN_REFRESH_MARGIN_MS) throw new Error("Invalid App installation token expiry/lifetime");
+    installationApi = githubClient(receipt.token, fetcher);
+    expiresAt = expiry;
+  };
+  const api = async (endpoint, options) => {
+    if (!installationApi || now() + TOKEN_REFRESH_MARGIN_MS >= expiresAt) {
+      refreshing ??= refresh().finally(() => { refreshing = undefined; });
+      await refreshing;
+    }
+    // Never retry this request: an ambiguous Review POST is still ambiguous.
+    return installationApi(endpoint, options);
+  };
   // App JWTs authenticate App endpoints; ordinary REST reads use the
   // installation token, including the public bot-user identity lookup.
   const user = await api(`/users/${encodeURIComponent(env.API_REVIEW_BOT_LOGIN)}`);

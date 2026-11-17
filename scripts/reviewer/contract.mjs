@@ -1,4 +1,5 @@
 import path from "node:path";
+import { API_REVIEW_BODY_BLOCKERS_HEADING } from "../../src/gate.js";
 
 export const CLEAN_TEXT = "API Credit Codex Review: No actionable P0–P2 findings.";
 export const SHA = /^[0-9a-f]{40}$/;
@@ -87,7 +88,7 @@ export function reviewPayload(snapshot, result, cleanText = CLEAN_TEXT) {
     : `${marker(snapshot)}\n\nAPI Credit Codex Review: ${result.blocking.length} actionable P0–P2 finding(s).\n\nReviewed head: \`${snapshot.head}\`\nComparison base: \`${snapshot.base}\`\nNon-blocking P3 findings: ${result.findings.length - result.blocking.length}.`;
   const unanchored = result.blocking.filter((f) => f.line === null);
   const quote = (value) => value.split(/\r\n|\n|\r/).map((line) => `> ${line}`).join("\n");
-  if (unanchored.length) body += "\n\n### Blocking findings outside the inline diff\n\n" + unanchored.map((f) =>
+  if (unanchored.length) body += `\n\n${API_REVIEW_BODY_BLOCKERS_HEADING}\n\n` + unanchored.map((f) =>
     quote(`${f.title}\n\nLocation: ${JSON.stringify(f.path)}:${f.code_location.line_range.start}\n\n${f.body}`)).join("\n\n");
   // Only the publisher writes a standalone clean signal. Unanchored blocker
   // text is quoted, and P3 never opens a blocking thread.

@@ -178,7 +178,7 @@ test("App authentication reads an env-named key path and pins App slug + numeric
     if (url.endsWith("/app")) return Response.json({ slug: "connfy-api-reviewer" });
     if (url.includes("/users/")) { assert.equal(opts.headers.Authorization, "Bearer dummy-installation-token"); return Response.json({ login: identity.login, id: Number(identity.id), type: "Bot" }); }
     assert.equal(opts.method, "POST"); assert.deepEqual(JSON.parse(opts.body).permissions, { contents: "read", pull_requests: "write" });
-    return Response.json({ token: "dummy-installation-token" });
+    return Response.json({ token: "dummy-installation-token", expires_at: new Date(Date.now() + 3_600_000).toISOString() });
   };
   assert.equal(typeof await appClient(env, fetcher), "function"); assert.equal(count, 3);
   await assert.rejects(appClient({ ...env, API_REVIEW_BOT_ID: "77" }, fetcher), /identity mismatch/);

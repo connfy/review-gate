@@ -9,6 +9,7 @@
 export const DEFAULT_CLEAN_TEXT = "Codex Review: Didn't find any major issues.";
 export const DEFAULT_API_REVIEW_CLEAN_TEXT =
   "API Credit Codex Review: No actionable P0–P2 findings.";
+export const API_REVIEW_BODY_BLOCKERS_HEADING = "### Blocking findings outside the inline diff";
 export const DEFAULT_CLEAN_REACTION_CONTENT = "+1";
 export const DEFAULT_IN_PROGRESS_REACTION_CONTENT = "eyes";
 export const DEFAULT_REVIEW_REQUEST_TEXT = "@codex review";
@@ -88,6 +89,21 @@ function apiReviewQualifies(review, sha, config) {
     review?.state === "COMMENTED" && review?.commit_id === sha &&
     parseTimestamp(review?.submitted_at) !== null &&
     stamp?.[1] === sha;
+}
+
+function latestApiBodyBlocker(reviews, sha, config) {
+  let latest = null;
+  for (const review of reviews) {
+    if (!apiReviewQualifies(review, sha, config)) continue;
+    const lines = String(review.body ?? "").split("\n");
+    // These are publisher-owned v1 protocol lines, not model prose (which is
+    // quoted). Recognize already-published v1 summaries without a new marker.
+    if (!lines.includes(API_REVIEW_BODY_BLOCKERS_HEADING) ||
+        !lines.some((line) => /^API Credit Codex Review: [1-9]\d* actionable P0–P2 finding\(s\)\.$/.test(line))) continue;
+    const timestamp = parseTimestamp(review.submitted_at);
+    if (latest === null || timestamp > latest.timestamp) latest = { timestamp };
+  }
+  return latest;
 }
 
 function loginFor(user) {
@@ -1010,8 +1026,9 @@ export function evaluateGate({
     timelineEvents,
     config: resolved,
   });
+  const bodyBlocker = latestApiBodyBlocker(reviews, sha, resolved);
   let disposition = null;
-  if (cleanEvents.length === 0) {
+  if (cleanEvents.length === 0 || bodyBlocker !== null) {
     disposition = settledDisposition({
       sha,
       baseSha,
@@ -1023,9 +1040,16 @@ export function evaluateGate({
       timelineEvents,
       config: resolved,
     });
+    // An earlier clean signal/attestation does not resolve newer body findings,
+    // just as it cannot resolve an outstanding current inline thread.
+    if (bodyBlocker !== null && disposition !== null &&
+        disposition.timestamp <= bodyBlocker.timestamp) disposition = null;
     if (disposition !== null) {
       cleanEvents.push(disposition.detail);
     }
+  }
+  if (bodyBlocker !== null && disposition === null) {
+    details.push("Unsettled body-only P0–P2 findings in the API-credit review.");
   }
   if (cleanEvents.length === 0) {
     const inProgressEvents = reviewInProgressEvents({

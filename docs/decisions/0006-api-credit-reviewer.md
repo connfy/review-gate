@@ -33,6 +33,11 @@ unanchorable blockers remain in its body rather than being lost. The publisher,
 not the model, emits clean text. Only the existing Review Gate App writes status.
 The new identity is paired login plus numeric Bot ID and is valid only for
 formal submitted exact-head Reviews, not legacy comments or reactions.
+Authenticated body-only blockers are outstanding negative evidence, not just
+the absence of clean text: an earlier hosted clean cannot mask them. As with
+inline findings, a later clean signal does not silently resolve them. Use the
+existing authorized exact-head/base settlement after the latest blocking Review
+or change the head; no new settlement authority is introduced.
 
 ## Implementation choices (agent-selected within that scope)
 
@@ -58,6 +63,10 @@ formal submitted exact-head Reviews, not legacy comments or reactions.
 - Frozen base is comparison provenance and a pre-publication race check, not
   an added post-publication base-staleness gate. Preserve existing direct hosted
   review semantics and branch/CI/settlement freshness rules.
+- Retain the installation token's `expires_at` and refresh before a request
+  when its remaining lifetime is no greater than the HTTP timeout. Generate a
+  fresh short-lived App JWT for each refresh because inference can outlast both
+  credentials. Coalesce concurrent refreshes, but never retry a Review POST.
 - Repository authorization is independent of App installation scope. The
   coordinator reported the owner's all-connfy installation decision on
   2026-11-17; the owner then asked that every connfy repository may use it, so the
