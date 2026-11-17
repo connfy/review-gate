@@ -19,14 +19,17 @@ not a custom bug-finding prompt or another review model. Native material-bug
 criteria already prefer no findings over speculation. Only actionable P0–P2
 defects introduced by the diff open inline threads. No minimum count, repeated
 clean-pass loop, confidence cutoff, P3 thread or cosmetic gate is introduced.
-P3 remains visible in local evidence. Invalid/inconsistent results are unusable
-evidence, not evidence of a code defect or a clean review.
+P3 remains visible in local evidence and never becomes a blocker because its
+location or overall label disagrees. Malformed/incomplete evidence and an empty
+incorrect result remain unusable; a valid nonempty finding set is classified by
+its severities, not coupled to the model's overall label.
 
 A trusted local controller freezes SHAs, fetches into its own temporary object
 repository/worktree, isolates model tools from credentials, and preserves raw
 evidence. A separate publishing step in trusted code authenticates as the
 dedicated App, rechecks live head/base/ready state, and submits exactly one
-`COMMENT` Review with explicit `commit_id` and inline blockers. The publisher,
+`COMMENT` Review with explicit `commit_id` and inline blockers where possible;
+unanchorable blockers remain in its body rather than being lost. The publisher,
 not the model, emits clean text. Only the existing Review Gate App writes status.
 The new identity is paired login plus numeric Bot ID and is valid only for
 formal submitted exact-head Reviews, not legacy comments or reactions.
@@ -47,12 +50,19 @@ formal submitted exact-head Reviews, not legacy comments or reactions.
   treating evidence as a result. Revalidate on CLI upgrade, not by adjusting
   malformed output into a pass.
 - Command-only trigger and a single-host per-head lock/remote signed-review
-  deduplication. Persist POST intent, refuse automatic retries after ambiguous
+  deduplication per shared freshness generation, with generation-bound local
+  receipts. New same-head requests/restores must expire deduplication when they
+  expire gate authority. Persist POST intent, refuse automatic retries after ambiguous
   publication. Multiple hosts require coordination rather than pretending the
   GitHub POST endpoint provides atomic idempotency.
 - Frozen base is comparison provenance and a pre-publication race check, not
   an added post-publication base-staleness gate. Preserve existing direct hosted
   review semantics and branch/CI/settlement freshness rules.
+- Repository authorization is independent of App installation scope. The
+  coordinator reported the owner's all-connfy installation decision on
+  2026-11-17; the runner still defaults to only the two AimStrings repositories,
+  enforcing an explicit configurable allowlist before credentials/network/model
+  work and again at controller/publisher boundaries.
 
 ## Alternatives
 
@@ -67,7 +77,8 @@ formal submitted exact-head Reviews, not legacy comments or reactions.
 
 ## Operational evidence still required
 
-App creation/installation, real identity values, Worker activation, a published
-exact-head Review and resulting Worker status have not been authorized by this
-build. The coordinator owns those steps. The first-use runbook is
+The coordinator has created/installed the App and supplied its identity; the
+worker did not perform those external actions. Worker activation, a published
+exact-head Review and resulting Worker status remain coordinator steps, not
+authorized by this build/review-fix round. The first-use runbook is
 [API-credit reviewer](../api-credit-reviewer.md); it names docs #999 and web #586.

@@ -131,6 +131,12 @@ and its numeric **Bot user ID** in `API_REVIEW_BOT_ID`; do not append it to the
 legacy `REVIEW_BOT_LOGINS` list. Existing hosted review and status authority stay
 unchanged.
 
+The local runner defaults to only `connfy/aimstrings-docs` and
+`connfy/aimstrings-web`. `API_REVIEW_ALLOWED_REPOS` must explicitly name any
+other authorized target; an all-repositories App installation does not grant
+runner authority for those repositories. See the runbook for freshness-aware
+deduplication and retained-failure recovery.
+
 ## Setup (quicker than it looks)
 
 Five steps total. Create a GitHub App → convert the key → deploy the Worker →

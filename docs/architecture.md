@@ -15,6 +15,12 @@ reconciled separately because the inspected CLI's outer review event stream
 reports zero tokens despite actual child usage. See
 [ADR 0006](decisions/0006-api-credit-reviewer.md).
 
+The runner's explicit repository allowlist is independent of installation scope.
+Publisher receipts/deduplication and gate authority share the same freshness
+boundary, including same-head re-requests/restores. P3 never needs an inline
+anchor or a matching overall label to remain non-blocking; unanchorable P0–P2
+findings stay in the submitted Review body rather than being discarded.
+
 ## Module relationships
 
 - `src/index.js` owns the Worker entrypoints, GitHub orchestration, status

@@ -5,6 +5,9 @@
 Local implementation authorized by the owner on 2026-11-17. App creation,
 installation, Worker activation and published-review acceptance are separate
 operator steps, not implied by this source. No GitHub Actions reviewer is used.
+The coordinator has since created the dedicated App with an all-connfy-repos
+installation, per the owner's decision. That installation scope does not
+authorize the runner to review every installed repository.
 
 Use this reviewer when hosted `chatgpt-codex-connector` cannot review because of
 plan usage. Keep Review Gate as the sole writer of `review-gate/codex-clean`.
@@ -44,19 +47,32 @@ Drafts may be dry-run reviewed but cannot be published by this command. There
 is no historical SHA override, request-comment watcher, background daemon,
 automatic retry, or `@codex review` comment emission.
 
+`API_REVIEW_ALLOWED_REPOS` is the runner's exact, comma-separated repository
+allowlist. Absent configuration defaults to **only** `connfy/aimstrings-docs`
+and `connfy/aimstrings-web`; an empty list, wildcard or malformed entry is an
+error. The CLI rejects other repos before reading App credentials, accessing
+GitHub or starting inference. The controller/publisher also enforce the same
+list. An owner-approved additional repository must be explicitly named in this
+config; an all-repositories App installation never broadens it implicitly.
+
 ## Review and publication contract
 
-1. Read the real PR; freeze repository, PR number and full head/base SHAs.
+1. Read the real PR and paginated issue comments/timeline; freeze repository,
+   PR number, full head/base SHAs and the current server/request freshness
+   boundary shared with the gate.
    Fetch those objects into a fresh private bare repository and detached temp
-   worktree. Compute the merge base and save the exact diff. Disable Git hooks,
+   worktree. Compute the merge base and save the three-context-line diff. Disable Git hooks,
    external diff/textconv and inherited Git configuration during preparation.
 2. Run **native `codex exec review --base <frozen-base>`**, using
    `gpt-6.1-sol` at `high`, through the existing credit wrapper. The native
    rubric favors no findings over speculative, pre-existing, intentional,
    stylistic or low-value issues. There is no finding minimum and no review
    loop demanding successive clean passes. Only actionable P0–P2 findings an
-   author would fix open inline threads; P3 is counted, retained locally and
-   never posted as a thread.
+   author would fix open inline threads where an anchor exists; otherwise the
+   finding stays blocking in the Review body. P3 is counted, retained locally
+   and never posted as a thread. A valid P3-only result is clean even when the
+   model's overall label disagrees or its non-blocking location is outside the
+   diff. Severity, not that label, determines publication.
 3. Isolate the reviewer with a sparse Bubblewrap filesystem and empty process
    environment. Mount only system runtime files, the Codex executable directory,
    the frozen source, job state and private inference-key/ledger locations. WSL's
@@ -79,11 +95,13 @@ automatic retry, or `@codex review` comment emission.
    The source's structured `exited_review_mode.review_output` is a live protocol
    item, not persisted by this CLI as an `event_msg`. This version's
    `--output-schema` is not passed into the native review delegate. Require a unique complete result,
-   valid P0–P3 priority/location/confidence/correctness fields, diff-overlapping
-   anchors, completed runtime, recorded usage and successful nonempty tool
+   valid P0–P3 priority/location/confidence/correctness fields, completed runtime,
+   recorded usage and successful nonempty tool
    output (rejecting the known zero-tool-output failure, not enforcing a
    particular source-reader command). This is diagnostic evidence, not proof
-   every relevant file was read. Unknown priority, inconsistent correctness, prose-parser fallback,
+   every relevant file was read. One enclosing JSON Markdown fence is accepted;
+   arbitrary surrounding prose is not. Unknown priority, an empty incorrect
+   result, an explicit incomplete sentinel, prose-parser fallback,
    interruption, quota, runtime error, missing output or incomplete access
    produces **no publication**. These checks establish usable evidence, not
    model-review quality. Logs remain available to diagnose rejected evidence.
@@ -91,10 +109,15 @@ automatic retry, or `@codex review` comment emission.
    P0–P2 findings gets the configured clean sentence; model prose never supplies
    that sentence. A findings summary never contains it. Post one GitHub Review
    with `event: COMMENT`, **explicit `commit_id: frozen-head`**, a provenance
-   marker containing the frozen head/base, and all blocking comments in that
-   same request. Added and removed lines use RIGHT/LEFT anchors respectively.
+   marker containing the frozen head/base, and all blocking findings in that
+   same request. Surviving files use HEAD/RIGHT coordinates including context;
+   only fully deleted files use LEFT coordinates. A blocking finding outside
+   inline geometry is quoted in the Review body, without losing the finding or
+   producing a clean signal. Model-authored body text cannot inject a standalone
+   clean line. P3 locations do not need inline anchors.
 7. Immediately before POST, re-fetch and require the same open, ready head/base
-   and repository. A push or base move during review aborts publication.
+   and repository, and require the same freshness boundary. A push, base move
+   or new request boundary during review aborts publication.
    A later head change invalidates gate authority. After publication, a later
    base advance follows existing direct-hosted-review semantics; the provenance
    base is not a new forever-blocking base freshness rule. Existing branch/CI
@@ -108,8 +131,11 @@ it does not prove the semantic correctness of every finding.
 
 The default state directory is `~/.local/state/api-credit-reviewer`. An atomic
 local directory lock serializes a repository/PR/head. Remote, paginated review
-reads deduplicate an already-published signed Review for that head even if local
-state is absent. A POST-intent receipt is saved before the only POST. A lost
+reads deduplicate an already-published signed Review only when it is newer than
+the current gate boundary. Local receipts also include that boundary in their
+key. Thus a later request or force-push/restore to the same SHA starts a new
+generation instead of stranding a stale result behind permanent deduplication.
+Within one generation, a POST-intent receipt is saved before the only POST. A lost
 response or interrupted write is ambiguous: subsequent invocations refuse to
 automatically retry it. Reconcile the remote Review and local receipt first.
 This assumes a single trusted host/state directory; multiple independent hosts
@@ -120,8 +146,10 @@ Inspect the lock's `owner.json` (PID, frozen pair, artifact directory), confirm
 the process is no longer running, then inspect the retained events, native
 session, ledger and receipt. A stale lock can be removed manually after that
 inspection. Never delete a live lock or an ambiguous POST receipt just to retry.
-If GitHub contains the signed exact-head Review, the next invocation deduplicates
-it. If remote history confirms no Review, the operator can archive the failed
+If GitHub contains the signed exact-head Review for the current generation, the
+next invocation deduplicates it. A newer boundary allows a fresh review rather
+than requiring a dummy commit. If remote history confirms no Review in the
+ambiguous generation, the operator can archive the failed
 receipt before an explicitly chosen retry. No timeout or quota condition is
 ever a clean result. No automatic watchdog kills a review.
 
@@ -130,12 +158,20 @@ engine config, JSON events, stderr, native sessions, token ledger receipt,
 validated result, proposed review payload and completion receipt, then remove
 their own temporary source checkout. Failed runs keep partial outputs and the
 scratch path in `failure.json`. Interruptions may leave the lock/scratch and
-partial transcript. The Codex credit ledger remains at its ordinary host path.
+partial transcript. This retention is deliberate: a signal can arrive before
+the native sessions, diff or other inputs have been copied/finished. After
+confirming the job is dead, archive its native-session files and any still-needed
+frozen inputs before removing the recorded scratch directory and lock. Retained
+source is not an unattended job; check disk use during recovery. Do not add an
+unconditional signal handler that deletes evidence or a lock while publication
+may still be ambiguous. The Codex credit ledger remains at its ordinary host path.
 **The inspected CLI reports zero outer tokens for native review**, even though
 the review child spent tokens. Keep that original `ledger.json` receipt as-is;
 `native-usage.json` and the append-only
 `~/.local/state/codex-credit/native-review-usage.jsonl` record the linked review
-child's final `token_count.info.total_token_usage`. Do not add the two if a future
+child's last observed `token_count.info.total_token_usage`, including before
+rejecting failed wrapper/runtime completion. A failed run's counter is partial,
+not a verified final bill. Do not add the two if a future
 CLI reports nonzero outer usage: they describe the same run. These are token
 records, not billed USD or evidence of which credit balance paid. Even a
 malformed review can spend tokens; accounting recovery precedes verdict parsing.
@@ -164,9 +200,9 @@ The ordinary manual settings flow needs no callback service or secret exchange:
    directory outside any repository, and `chmod 600 /absolute/path/key.pem`.
    The Node publisher accepts GitHub's PKCS#1 PEM directly. This is a different
    key from the existing Review Gate App's Worker key; do not replace that key.
-5. **Install App → connfy → Only select repositories → aimstrings-docs,
-   aimstrings-web**. Record the installation ID from the installation URL.
-   Recheck the displayed permissions and selected repositories.
+5. Install on the scope the owner authorized; the current connfy installation
+   covers **all connfy repositories**. Record the installation ID and recheck
+   displayed permissions/scope. Keep the runner allowlist independently narrow.
 6. Get the actual login/user ID with this read-only command, replacing the
    actual slug if renamed:
 
@@ -180,6 +216,13 @@ The ordinary manual settings flow needs no callback service or secret exchange:
    Never paste a PEM or inference key into an agent conversation.
 7. For Review Gate, configure non-secret `API_REVIEW_BOT_LOGIN` and
    `API_REVIEW_BOT_ID`; optionally `API_REVIEW_CLEAN_TEXT` (must match the runner).
+   Preserve remotely configured identity vars when deploying (for example,
+   `wrangler deploy --keep-vars` under the authorized deployment procedure), or
+   manage them in that deployment's own config. Do not copy one owner's reviewer
+   identity into every deployment of this reusable gate. If request text or
+   legacy bot logins differ from defaults, mirror `REVIEW_REQUEST_TEXT` and
+   `REVIEW_BOT_LOGINS` in the runner env so the shared boundary gets identical
+   configuration.
    Leave the hosted bot login configuration unchanged. Activation requires the
    separately authorized review/merge/Worker deployment process. No new
    reviewer-App private key belongs in the Worker. Review Gate's existing
@@ -205,7 +248,9 @@ Missing or malformed IDs disable it. It accepts only a submitted `COMMENTED`
 Review with exact native `commit_id` and matching full-head provenance marker,
 from that exact login **and** numeric ID with `type: Bot`. The clean text must
 be a standalone line. The Review must be newer than the server-stamped PR/head
-boundary and latest existing review-request boundary. Issue comments and
+boundary and latest existing review-request boundary. The same boundary expires
+publisher deduplication. Its completed findings Review also ends an earlier
+hosted `eyes` cycle for response/settlement purposes. Issue comments and
 reactions from this App never count. Drafts and unresolved current threads
 continue to fail. A human settlement may refer to its signed exact-head formal
 review under the existing settlement conditions; no new settlement author is

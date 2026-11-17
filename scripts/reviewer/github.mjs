@@ -1,5 +1,7 @@
 import { createPrivateKey, sign } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { apiReviewBoundaryTime } from "../../src/gate.js";
+import { assertAllowedRepository, requestConfig } from "./config.mjs";
 
 export function githubClient(token, fetcher = fetch) {
   return async (endpoint, { method = "GET", body } = {}) => {
@@ -41,27 +43,48 @@ export async function appClient(env = process.env, fetcher = fetch) {
 }
 
 export async function listReviews(api, repo, number) {
-  const reviews = [];
+  assertAllowedRepository(repo);
+  return listPages(api, `/repos/${repo}/pulls/${number}/reviews`);
+}
+
+async function listPages(api, endpoint) {
+  const values = [];
   for (let page = 1; ; page++) {
-    const batch = await api(`/repos/${repo}/pulls/${number}/reviews?per_page=100&page=${page}`);
-    if (!Array.isArray(batch)) throw new Error("Invalid review list");
-    reviews.push(...batch);
-    if (batch.length < 100) return reviews;
+    const batch = await api(`${endpoint}?per_page=100&page=${page}`);
+    if (!Array.isArray(batch)) throw new Error("Invalid paginated GitHub evidence");
+    values.push(...batch);
+    if (batch.length < 100) return values;
   }
+}
+
+export async function reviewCycle(api, snapshot, pr) {
+  assertAllowedRepository(snapshot.repo);
+  const prefix = `/repos/${snapshot.repo}`;
+  const live = pr ?? await api(`${prefix}/pulls/${snapshot.number}`);
+  const [issueComments, timelineEvents] = await Promise.all([
+    listPages(api, `${prefix}/issues/${snapshot.number}/comments`),
+    listPages(api, `${prefix}/issues/${snapshot.number}/timeline`),
+  ]);
+  const boundary = apiReviewBoundaryTime({ prCreatedAt: live.created_at, issueComments, timelineEvents, config: requestConfig() });
+  if (boundary === null) throw new Error("Cannot establish current review boundary");
+  return { pr: live, boundary };
 }
 
 export function isPublishedReview(review, snapshot, identity) {
   return review.user?.login === identity.login && String(review.user?.id) === String(identity.id) &&
     review.user?.type === "Bot" && review.commit_id === snapshot.head &&
-    review.state === "COMMENTED" && Boolean(review.submitted_at) &&
+    review.state === "COMMENTED" && Number.isSafeInteger(snapshot.reviewBoundary) &&
+    Date.parse(review.submitted_at) > snapshot.reviewBoundary &&
     new RegExp(`^<!-- api-credit-review:v1 head=${snapshot.head} base=[0-9a-f]{40} -->\\n`).test(String(review.body));
 }
 
 export async function publishReview({ api, snapshot, payload, identity, beforePost = async () => {} }) {
   const { repo, number } = snapshot;
-  if ((await listReviews(api, repo, number)).some((r) => isPublishedReview(r, snapshot, identity))) return { deduplicated: true };
-  const live = await api(`/repos/${repo}/pulls/${number}`);
+  assertAllowedRepository(repo);
+  const { pr: live, boundary } = await reviewCycle(api, snapshot);
   if (live.state !== "open" || live.draft || live.head.sha !== snapshot.head || live.base.sha !== snapshot.base || live.base.repo.full_name.toLowerCase() !== repo.toLowerCase()) throw new Error("PR changed or is not publishable");
+  if (boundary !== snapshot.reviewBoundary) throw new Error("Review request/head boundary changed; review the new cycle");
+  if ((await listReviews(api, repo, number)).some((r) => isPublishedReview(r, snapshot, identity))) return { deduplicated: true };
   if (payload.commit_id !== snapshot.head || payload.event !== "COMMENT") throw new Error("Wrong publication commit/event");
   await beforePost(); // Persist POST intent; an ambiguous network failure must not cause an automatic retry.
   const review = await api(`/repos/${repo}/pulls/${number}/reviews`, { method: "POST", body: payload });

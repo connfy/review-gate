@@ -16,6 +16,7 @@ export function validateReview(result, { checkout, changedLines }) {
       !Array.isArray(result.findings) || !text(result.overall_explanation) ||
       !score(result.overall_confidence_score) ||
       !["patch is correct", "patch is incorrect"].includes(result.overall_correctness)) fail("Incomplete native review result");
+  if (/^REVIEW_INCOMPLETE\b/i.test(result.overall_explanation.trim())) fail("Native review reports incomplete evidence");
   const seen = new Set();
   const findings = result.findings.map((f) => {
     if (!keys(f, ["title", "body", "confidence_score", "priority", "code_location"]) ||
@@ -25,59 +26,74 @@ export function validateReview(result, { checkout, changedLines }) {
         !keys(f.code_location, ["absolute_file_path", "line_range"]) ||
         !keys(f.code_location.line_range, ["start", "end"])) fail("Malformed finding");
     const { absolute_file_path: file, line_range: { start, end } } = f.code_location;
-    if (!text(file) || !path.isAbsolute(file) || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start) fail("Invalid finding location");
+    if (!text(file) || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < 0) fail("Invalid finding location");
+    // P3 never becomes a published thread or a blocker. It need not have an
+    // inline anchor; preserve even an out-of-diff/caller location locally.
+    if (f.priority === 3) return { ...f, path: path.isAbsolute(file) ? path.relative(checkout, file) : file, line: null, side: null };
+    if (!path.isAbsolute(file) || start < 1 || end < start) fail("Invalid blocking finding location");
     const relative = path.relative(checkout, file);
     if (!relative || relative.startsWith("../") || path.isAbsolute(relative)) fail("Finding outside reviewed checkout");
     const sides = changedLines.get(relative);
-    // A native finding must overlap the diff. Do not silently discard an invalid
-    // finding and turn a failed review into a clean one.
-    const side = ["RIGHT", "LEFT"].find((s) => sides?.[s] && [...sides[s]].some((line) => line >= start && line <= end));
-    if (!side) fail("Finding does not overlap reviewed diff");
+    // Native locations in surviving files are HEAD coordinates. Falling back
+    // to a numerically equal old-side line can bind an unrelated earlier hunk.
+    const side = sides?.deleted ? "LEFT" : "RIGHT";
+    const line = sides && [...sides[side]].find((n) => n >= start && n <= end);
     const key = `${relative}:${start}:${end}:${f.title}`;
     if (seen.has(key)) fail("Duplicate finding");
     seen.add(key);
-    const line = [...sides[side]].find((n) => n >= start && n <= end);
-    return { ...f, path: relative, line, side };
+    return { ...f, path: relative, line: line ?? null, side: line === undefined ? null : side };
   });
   const blocking = findings.filter((f) => f.priority <= 2);
-  if ((blocking.length === 0) !== (result.overall_correctness === "patch is correct")) fail("Inconsistent correctness verdict");
+  if (findings.length === 0 && result.overall_correctness !== "patch is correct") fail("Incorrect verdict without findings or usable evidence");
+  // Severity controls publication, not a possibly inconsistent model label:
+  // valid P3-only results are clean; valid P0–P2 findings remain reportable.
   return { ...result, findings, blocking };
 }
 
-// Parse a zero-context, non-quoted git diff, retaining both added and deleted
-// line anchors so actionable removals can be published, not silently dropped.
+// Hunk counts include context when --unified=3 is used. HEAD coordinates use
+// RIGHT; only an entirely deleted file uses the old LEFT coordinate space.
 export function changedLinesFromDiff(diff) {
   const files = new Map();
-  let file, oldFile;
-  const ensure = (name) => { if (!files.has(name)) files.set(name, { RIGHT: new Set(), LEFT: new Set() }); };
+  let file, oldFile, inHunk = false;
+  const ensure = (name) => { if (!files.has(name)) files.set(name, { RIGHT: new Set(), LEFT: new Set(), deleted: false }); };
   for (const line of diff.split("\n")) {
-    if (line.startsWith("--- a/")) oldFile = line.slice(6);
-    else if (line.startsWith("+++ b/")) {
-      file = line.slice(6);
-      if (file.startsWith('"')) fail("Quoted diff path unsupported");
-      ensure(file);
-    } else if (line.startsWith("+++ /dev/null")) { file = oldFile; if (file) ensure(file); }
-    else if (file && line.startsWith("@@")) {
+    if (line.startsWith("diff --git ")) { file = undefined; oldFile = undefined; inHunk = false; }
+    else if (line.startsWith("@@")) {
+      inHunk = true;
+      if (!file) continue;
       const m = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
       if (!m) fail("Malformed diff hunk");
       for (const [side, start, count] of [["LEFT", m[1], m[2]], ["RIGHT", m[3], m[4]]]) {
         for (let i = 0; i < Number(count ?? 1); i++) files.get(file)[side].add(Number(start) + i);
       }
     }
+    // File-header lookalikes inside added/deleted source are hunk data.
+    else if (inHunk) continue;
+    else if (line.startsWith("--- a/")) oldFile = line.slice(6);
+    else if (line.startsWith("+++ b/")) {
+      file = line.slice(6);
+      if (file.startsWith('"')) fail("Quoted diff path unsupported");
+      ensure(file);
+    } else if (line.startsWith("+++ /dev/null")) { file = oldFile; if (file) { ensure(file); files.get(file).deleted = true; } }
+    else if (line.startsWith("+++ ")) file = undefined;
   }
   return files;
 }
 
 export function reviewPayload(snapshot, result, cleanText = CLEAN_TEXT) {
   if (!SHA.test(snapshot.head) || !SHA.test(snapshot.base) || !text(cleanText)) fail("Invalid publication contract");
-  const body = result.blocking.length === 0
+  let body = result.blocking.length === 0
     ? `${marker(snapshot)}\n\n${cleanText}\n\nReviewed head: \`${snapshot.head}\`\nComparison base: \`${snapshot.base}\`\nNon-blocking P3 findings: ${result.findings.length}.`
     : `${marker(snapshot)}\n\nAPI Credit Codex Review: ${result.blocking.length} actionable P0–P2 finding(s).\n\nReviewed head: \`${snapshot.head}\`\nComparison base: \`${snapshot.base}\`\nNon-blocking P3 findings: ${result.findings.length - result.blocking.length}.`;
-  // Do not put model-authored explanation into the summary: only the publisher
-  // writes the clean signal, and P3 never opens a blocking thread.
+  const unanchored = result.blocking.filter((f) => f.line === null);
+  const quote = (value) => value.split(/\r\n|\n|\r/).map((line) => `> ${line}`).join("\n");
+  if (unanchored.length) body += "\n\n### Blocking findings outside the inline diff\n\n" + unanchored.map((f) =>
+    quote(`${f.title}\n\nLocation: ${JSON.stringify(f.path)}:${f.code_location.line_range.start}\n\n${f.body}`)).join("\n\n");
+  // Only the publisher writes a standalone clean signal. Unanchored blocker
+  // text is quoted, and P3 never opens a blocking thread.
   return {
     commit_id: snapshot.head, event: "COMMENT", body,
-    comments: result.blocking.map((f) => ({ path: f.path, line: f.line, side: f.side, body: `${f.title}\n\n${f.body}` })),
+    comments: result.blocking.filter((f) => f.line !== null).map((f) => ({ path: f.path, line: f.line, side: f.side, body: `${f.title}\n\n${f.body}` })),
   };
 }
 
@@ -126,5 +142,7 @@ export function parseNativeResult(records, events, exitCode, options) {
   // Exec's public event stream renders review output and omits child usage.
   // Consume the review delegate's original strict JSON, not the parent's prose
   // or core parser fallback. Keep the original wrapper ledger unchanged.
-  return validateReview(JSON.parse(childDone[0].payload.last_agent_message), options);
+  const original = childDone[0].payload.last_agent_message.trim();
+  const fenced = original.match(/^```(?:json)?\s*(\{[\s\S]*\})\s*```$/i);
+  return validateReview(JSON.parse(fenced ? fenced[1] : original), options);
 }

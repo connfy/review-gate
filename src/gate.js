@@ -259,6 +259,16 @@ function latestReviewRequestTime(issueComments, timelineEvents, config) {
   return latest;
 }
 
+// Shared with the local publisher: deduplication must expire at exactly the
+// same server/request boundary that expires this App's gate authority.
+export function apiReviewBoundaryTime({ prCreatedAt, issueComments = [], timelineEvents = [], config }) {
+  const times = [
+    latestServerHeadBoundaryTime(timelineEvents, prCreatedAt),
+    latestReviewRequestTime(issueComments, timelineEvents, config),
+  ].filter((time) => time !== null);
+  return times.length ? Math.max(...times) : null;
+}
+
 function latestReviewRequestComment(issueComments, timelineEvents, config) {
   const candidates = [];
   for (const comment of issueComments) {
@@ -535,8 +545,8 @@ function latestReviewBotResponseTime({
   for (const review of reviews) {
     const author = loginFor(review?.user);
     if (
-      botLogins.has(author) &&
-      String(review?.commit_id ?? "") === sha
+      (botLogins.has(author) && String(review?.commit_id ?? "") === sha) ||
+      apiReviewQualifies(review, sha, config)
     ) {
       updateLatest(parseTimestamp(review?.submitted_at));
     }
@@ -870,11 +880,8 @@ export function codexCleanEvents({
     const resolved = resolveConfig(config);
     if (apiReviewQualifies(review, sha, resolved) &&
         body.split("\n").includes(resolved.apiReviewer.cleanText)) {
-      const boundaries = [
-        latestServerHeadBoundaryTime(timelineEvents, prCreatedAt),
-        latestReviewRequestTime(issueComments, timelineEvents, resolved),
-      ].filter((time) => time !== null);
-      if (boundaries.length && parseTimestamp(submittedAt) > Math.max(...boundaries)) {
+      const boundary = apiReviewBoundaryTime({ prCreatedAt, timelineEvents, issueComments, config: resolved });
+      if (boundary !== null && parseTimestamp(submittedAt) > boundary) {
         cleanEvents.push(`API-credit review body at ${submittedAt}`);
       }
     }

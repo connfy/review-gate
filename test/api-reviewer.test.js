@@ -12,7 +12,7 @@ import { parseArgs } from "../scripts/review-pr.mjs";
 import { evaluateGate, resolveConfig } from "../src/gate.js";
 
 const head = "a".repeat(40), base = "b".repeat(40), other = "c".repeat(40);
-const snapshot = { repo: "connfy/example", number: 42, head, base };
+const snapshot = { repo: "connfy/aimstrings-web", number: 42, head, base, reviewBoundary: Date.parse("2026-11-17T00:00:00Z") };
 const identity = { login: "connfy-api-reviewer[bot]", id: "123456" };
 const config = { apiReviewBotLogin: identity.login, apiReviewBotId: identity.id };
 const pr = () => ({ number: 42, state: "open", draft: false, created_at: "2026-11-17T00:00:00Z", head: { sha: head }, base: { sha: base, repo: { full_name: snapshot.repo } } });
@@ -46,9 +46,9 @@ for (const [label, mutate] of [
   ["unprioritized finding", (r) => { r.findings = [finding()]; delete r.findings[0].priority; }],
   ["unknown priority", (r) => { r.findings = [finding(4)]; }],
   ["outside path", (r) => { r.findings = [finding()]; r.findings[0].code_location.absolute_file_path = "/secret/key"; }],
-  ["unchanged location", (r) => { r.findings = [finding()]; r.findings[0].code_location.line_range = { start: 90, end: 90 }; }],
+  ["invalid line range", (r) => { r.findings = [finding()]; r.findings[0].code_location.line_range = { start: 0, end: 0 }; }],
   ["priority/title disagreement", (r) => { r.findings = [finding()]; r.findings[0].title = "[P1] Wrong label"; }],
-  ["contradictory clean with blocker", (r) => { r.findings = [finding()]; }],
+  ["incomplete verdict sentinel", (r) => { r.overall_explanation = "REVIEW_INCOMPLETE: unable to read source"; }],
 ]) test(`incomplete/malformed review rejects: ${label}`, () => {
   const r = raw(); mutate(r); assert.throws(() => validateReview(r, options));
 });
@@ -138,9 +138,10 @@ for (const label of ["new head", "new base", "draft", "closed", "wrong target", 
   await assert.rejects(publishReview({ api, snapshot, payload, identity }));
 });
 test("remote signed review deduplicates per head, including after a later base advance", async () => {
-  let calls = 0; const r = review(); r.body = r.body.replace(`base=${base}`, `base=${other}`);
-  const out = await publishReview({ api: async () => { calls++; return [r]; }, snapshot, payload: reviewPayload(snapshot, clean()), identity });
-  assert.equal(calls, 1); assert.equal(out.deduplicated, true);
+  const r = review(); r.body = r.body.replace(`base=${base}`, `base=${other}`);
+  const api = async (url, opts) => { assert.notEqual(opts?.method, "POST"); if (url.includes("/reviews?")) return [r]; return url.includes("?per_page") ? [] : pr(); };
+  const out = await publishReview({ api, snapshot, payload: reviewPayload(snapshot, clean()), identity });
+  assert.equal(out.deduplicated, true);
   assert.equal(isPublishedReview({ ...r, user: { ...r.user, id: 77 } }, snapshot, identity), false);
 });
 test("ambiguous POST failure is attempted once, with intent already persisted", async () => {
@@ -221,7 +222,7 @@ test("legacy hosted clean reviews keep their existing behavior alongside the new
   assert.equal(evaluate({ user: { login: "chatgpt-codex-connector[bot]" }, commit_id: head, submitted_at: review().submitted_at, body: "Codex Review: Didn't find any major issues." }).state, "success");
 });
 test("CLI accepts only live PR inputs, dry-run by default", () => {
-  assert.deepEqual(parseArgs(["Connfy/Example", "42"]), { repo: snapshot.repo, number: 42, publish: false });
+  assert.deepEqual(parseArgs(["Connfy/Aimstrings-Web", "42"]), { repo: snapshot.repo, number: 42, publish: false });
   assert.equal(parseArgs([snapshot.repo, "42", "--publish"]).publish, true);
   for (const args of [[snapshot.repo, "0"], ["--evil", "42"], [snapshot.repo, "42", "--head", head]]) assert.throws(() => parseArgs(args));
 });

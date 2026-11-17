@@ -4,10 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { checked, checkoutSnapshot, runNative, git } from "./reviewer/engine.mjs";
-import { appClient, isPublishedReview, listReviews } from "./reviewer/github.mjs";
-import { freezePullRequest, reviewAndPublish } from "./reviewer/controller.mjs";
+import { appClient, isPublishedReview, listReviews, reviewCycle } from "./reviewer/github.mjs";
+import { freezePullRequest, reviewAndPublish, publicationReceiptKey } from "./reviewer/controller.mjs";
+import { assertAllowedRepository } from "./reviewer/config.mjs";
 
-export function parseArgs(args) {
+export function parseArgs(args, env = process.env) {
   const [repo, rawNumber, ...rest] = args;
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo ?? "") || !/^[1-9][0-9]*$/.test(rawNumber ?? "") || !Number.isSafeInteger(Number(rawNumber))) throw new Error("Usage: node scripts/review-pr.mjs OWNER/REPO NUMBER [--publish] [--artifacts DIR]");
   const options = { repo: repo.toLowerCase(), number: Number(rawNumber), publish: false };
@@ -16,16 +17,19 @@ export function parseArgs(args) {
     else if (rest[i] === "--artifacts" && rest[i + 1]) options.artifacts = rest[++i];
     else throw new Error(`Unknown/missing option: ${rest[i]}`);
   }
+  assertAllowedRepository(options.repo, env);
   return options;
 }
 
 export async function main(args = process.argv.slice(2)) {
   process.umask(0o077);
   const options = parseArgs(args);
+  assertAllowedRepository(options.repo);
   const readApi = async (endpoint) => JSON.parse(await checked("gh", ["api", endpoint.replace(/^\//, "")]));
   const api = options.publish ? await appClient() : readApi;
   const pr = await api(`/repos/${options.repo}/pulls/${options.number}`);
-  const snapshot = freezePullRequest(pr, options.repo, options.number);
+  const { boundary } = await reviewCycle(api, options, pr);
+  const snapshot = freezePullRequest(pr, options.repo, options.number, { reviewBoundary: boundary });
   const identity = { login: process.env.API_REVIEW_BOT_LOGIN, id: process.env.API_REVIEW_BOT_ID };
   const stateRoot = path.resolve(process.env.API_REVIEW_STATE_DIR ?? path.join(os.homedir(), ".local/state/api-credit-reviewer"));
   const key = `${snapshot.repo.replace("/", "--")}-${snapshot.number}-${snapshot.head}`;
@@ -39,7 +43,7 @@ export async function main(args = process.argv.slice(2)) {
     await writeFile(path.join(lock, "owner.json"), JSON.stringify({ pid: process.pid, artifactDir, snapshot }, null, 2));
     await writeFile(path.join(artifactDir, "snapshot.json"), JSON.stringify(snapshot, null, 2));
     await writeFile(path.join(artifactDir, "pr.json"), JSON.stringify(pr, null, 2));
-    const receiptFile = path.join(stateRoot, `${key}.json`);
+    const receiptFile = path.join(stateRoot, `${publicationReceiptKey(snapshot)}.json`);
     if (options.publish) {
       if (pr.state !== "open" || pr.draft) throw new Error("Only open, ready PRs can be published");
       if ((await listReviews(api, snapshot.repo, snapshot.number)).some((r) => isPublishedReview(r, snapshot, identity))) {
