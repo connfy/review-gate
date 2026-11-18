@@ -1,5 +1,6 @@
 import path from "node:path";
 import { API_REVIEW_BODY_BLOCKERS_HEADING } from "../../src/gate.js";
+import { CODEX_CLI_VERSION, REVIEW_EFFORT, REVIEW_MODEL } from "./native-pin.mjs";
 
 export const CLEAN_TEXT = "API Credit Codex Review: No actionable P0–P2 findings.";
 export const SHA = /^[0-9a-f]{40}$/;
@@ -112,10 +113,10 @@ export function nativeEvidence(records, events, options) {
   if (sessions.length !== 2 || roots.length !== 1 || children.length !== 1) fail("Missing unique native review session lineage");
   const root = roots[0], child = children[0];
   for (const s of [root, child]) {
-    if (s.meta.cli_version !== "0.169.0" || s.meta.cwd !== options.checkout || s.meta.git?.commit_hash !== options.head) fail("Native session snapshot/version mismatch");
+    if (s.meta.cli_version !== CODEX_CLI_VERSION || s.meta.cwd !== options.checkout || s.meta.git?.commit_hash !== options.head) fail("Native session snapshot/version mismatch");
   }
   const contexts = child.records.filter((r) => r.type === "turn_context");
-  if (!contexts.length || contexts.some((r) => r.payload.model !== "gpt-6.1-sol" || r.payload.effort !== "high" || r.payload.approval_policy !== "never")) fail("Unexpected native review model/effort/approval policy");
+  if (!contexts.length || contexts.some((r) => r.payload.model !== REVIEW_MODEL || r.payload.effort !== REVIEW_EFFORT || r.payload.approval_policy !== "never")) fail("Unexpected native review model/effort/approval policy");
   const usage = child.records.filter((r) => r.type === "event_msg" && r.payload.type === "token_count").at(-1)?.payload.info?.total_token_usage;
   if (!usage || !Number.isSafeInteger(usage.input_tokens) || usage.input_tokens <= 0 ||
       !Number.isSafeInteger(usage.output_tokens) || usage.output_tokens <= 0 ||
