@@ -60,10 +60,10 @@ test("removed-only actionable lines become LEFT inline comments", () => {
 
 const runtime = () => ({
   records: [
-    { type: "session_meta", payload: { id: "test-thread", source: "exec", cwd: "/review", git: { commit_hash: head }, cli_version: "0.169.0" } },
+    { type: "session_meta", payload: { id: "test-thread", source: "exec", cwd: "/review", git: { commit_hash: head }, cli_version: "0.170.0" } },
     { type: "event_msg", payload: { type: "task_complete", root_turn_id: "root-turn" } },
-    { type: "session_meta", payload: { id: "review-thread", parent_thread_id: "test-thread", source: { subagent: "review" }, cwd: "/review", git: { commit_hash: head }, cli_version: "0.169.0" } },
-    { type: "turn_context", payload: { model: "gpt-6.1-sol", effort: "high", approval_policy: "never" } },
+    { type: "session_meta", payload: { id: "review-thread", parent_thread_id: "test-thread", source: { subagent: "review" }, cwd: "/review", git: { commit_hash: head }, cli_version: "0.170.0" } },
+    { type: "turn_context", payload: { model: "gpt-6.2-sol", effort: "medium", approval_policy: "never" } },
     { type: "event_msg", payload: { type: "token_count", info: { total_token_usage: { input_tokens: 1000, cached_input_tokens: 500, output_tokens: 40, total_tokens: 1040 } } } },
     { type: "event_msg", payload: { type: "task_complete", root_turn_id: "root-turn", last_agent_message: JSON.stringify(raw()) } },
   ],
@@ -230,7 +230,7 @@ test("review environment has no project trust/MCP, inherited credentials or writ
   const cfg = engineConfig({ checkout: "/tmp/source/checkout", policies: "/tmp/source/policies", artifactDir: "/job" });
   assert.match(cfg, /trust_level = "untrusted"/); assert.match(cfg, /inherit = "none"/);
   assert.match(cfg, /project_doc_max_bytes = 0/); assert.doesNotMatch(cfg, /mcp_servers|danger-full-access/);
-  assert.match(cfg, /enabled = false/); assert.match(cfg, /model_reasoning_effort = "high"/);
+  assert.match(cfg, /enabled = false/); assert.match(cfg, /model_reasoning_effort = "medium"/);
   const args = isolationArgs({ codexBin: "/runtime/bin/codex", resolverPath: "/mnt/wsl/resolv.conf", keyFile: "/key", creditState: "/ledger", artifactDir: "/job", scratch: "/tmp/source", codexHome: "/job/codex-home", args: ["review", "--base", base] });
   assert.ok(args.includes("--clearenv")); assert.ok(args.includes("--unshare-pid")); assert.ok(!args.includes("--trust"));
   assert.ok(!args.includes(process.env.API_REVIEW_PRIVATE_KEY_PATH ?? "unmounted-private-key"));

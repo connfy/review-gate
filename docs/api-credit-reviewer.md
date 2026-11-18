@@ -23,9 +23,17 @@ false-positive rates. Human judgement still validates individual findings.
 
 Prerequisites: Node 24+, Git, authenticated `gh` with read access to the target,
 `bwrap` with unprivileged user namespaces, and the existing
-`/home/minhun/.local/bin/codex-credit`. Native CLI **0.169.0** and its sibling
+`/home/minhun/.local/bin/codex-credit`. Native CLI **0.170.0** and its sibling
 `codex-code-mode-host`/`codex-exec-server` executables are the inspected adapter
-version. Revalidate the adapter against source before changing that version.
+version (`scripts/reviewer/native-pin.mjs` holds the version, model and effort
+together). Revalidate the adapter against source before changing that version.
+2026-11-18: the owner moved the reviewer to `gpt-6.2-sol` at `medium` on CLI
+0.170.0 while the API credit is short (it was `gpt-6.1-sol` at `high` on
+0.169.0). Revalidation that day: the native rubric, review task and request
+construction are byte-identical between `rust-v0.170.0` and `rust-v0.170.0`;
+`protocol.rs` changed only item-id serialization and moderation records, not
+the review output types; a dry run on a live PR validated the session evidence
+(version, model, effort, approval policy) and the credit ledger.
 The wrapper's key file must exist; it is mounted privately, never printed or
 loaded into the controller. No custom key or App credential goes in an argument.
 
@@ -65,7 +73,8 @@ config; an all-repositories App installation never broadens it implicitly.
    worktree. Compute the merge base and save the three-context-line diff. Disable Git hooks,
    external diff/textconv and inherited Git configuration during preparation.
 2. Run **native `codex exec review --base <frozen-base>`**, using
-   `gpt-6.1-sol` at `high`, through the existing credit wrapper. The native
+   `gpt-6.2-sol` at `medium` (`scripts/reviewer/native-pin.mjs`), through the
+   existing credit wrapper. The native
    rubric favors no findings over speculative, pre-existing, intentional,
    stylistic or low-value issues. There is no finding minimum and no review
    loop demanding successive clean passes. Only actionable P0–P2 findings an
@@ -297,10 +306,10 @@ in the build report, not in a unit-test claim.
   document scoped project rules, focused review and request/eyes behavior. The
   current page says P0/P1 only; observed connfy reviews include P2. Neither proves
   the private hosted service uses precisely this CLI version/model/rubric.
-- [Pinned native rubric](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/prompts/templates/review/rubric.md),
-  [review task/parser](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/core/src/tasks/review.rs),
-  [request construction](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/prompts/src/review_request.rs)
-  and [result types](https://github.com/openai/codex/blob/rust-v0.169.0/codex-rs/protocol/src/protocol.rs)
+- [Pinned native rubric](https://github.com/openai/codex/blob/rust-v0.170.0/codex-rs/prompts/templates/review/rubric.md),
+  [review task/parser](https://github.com/openai/codex/blob/rust-v0.170.0/codex-rs/core/src/tasks/review.rs),
+  [request construction](https://github.com/openai/codex/blob/rust-v0.170.0/codex-rs/prompts/src/review_request.rs)
+  and [result types](https://github.com/openai/codex/blob/rust-v0.170.0/codex-rs/protocol/src/protocol.rs)
   establish the native prompt family, schema and prose fallback.
 - [Non-interactive permissions/auth](https://learn.chatgpt.com/docs/non-interactive-mode)
   explain API-key scope, untrusted project config/MCP and output/schema surfaces.

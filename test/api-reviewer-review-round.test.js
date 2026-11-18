@@ -105,10 +105,10 @@ test("F2: empty incorrect and explicit incomplete evidence remain fail-closed", 
 function nativeFixture(result = raw()) {
   return {
     records: [
-      { type: "session_meta", payload: { id: "root", source: "exec", cwd: "/review", git: { commit_hash: head }, cli_version: "0.169.0" } },
+      { type: "session_meta", payload: { id: "root", source: "exec", cwd: "/review", git: { commit_hash: head }, cli_version: "0.170.0" } },
       { type: "event_msg", payload: { type: "task_complete", root_turn_id: "turn" } },
-      { type: "session_meta", payload: { id: "child", source: { subagent: "review" }, parent_thread_id: "root", cwd: "/review", git: { commit_hash: head }, cli_version: "0.169.0" } },
-      { type: "turn_context", payload: { model: "gpt-6.1-sol", effort: "high", approval_policy: "never" } },
+      { type: "session_meta", payload: { id: "child", source: { subagent: "review" }, parent_thread_id: "root", cwd: "/review", git: { commit_hash: head }, cli_version: "0.170.0" } },
+      { type: "turn_context", payload: { model: "gpt-6.2-sol", effort: "medium", approval_policy: "never" } },
       { type: "event_msg", payload: { type: "token_count", info: { total_token_usage: { input_tokens: 1000, cached_input_tokens: 500, output_tokens: 40, total_tokens: 1040 } } } },
       { type: "event_msg", payload: { type: "task_complete", root_turn_id: "turn", last_agent_message: JSON.stringify(result) } },
     ],
@@ -224,7 +224,7 @@ for (const absentLedger of [false, true]) test(`partial native usage survives ${
   const dir = await mkdtemp(path.join(os.tmpdir(), "reviewer-partial-usage-")); t.after(() => rm(dir, { recursive: true }));
   const creditState = path.join(dir, "ledger"); await mkdir(creditState);
   const { records, events } = nativeFixture(); events.pop(); events.push({ type: "turn.failed" });
-  await assert.rejects(finishNative({ snapshot, prepared: opts(edit), records, events, execution: { code: 1 }, ledger: absentLedger ? null : { model: "gpt-6.1-sol", exit: 1, thread_id: "root", errors: ["interrupted"] }, artifactDir: dir, creditState }), /usage retained/);
+  await assert.rejects(finishNative({ snapshot, prepared: opts(edit), records, events, execution: { code: 1 }, ledger: absentLedger ? null : { model: "gpt-6.2-sol", exit: 1, thread_id: "root", errors: ["interrupted"] }, artifactDir: dir, creditState }), /usage retained/);
   const retained = JSON.parse(await readFile(path.join(dir, "native-usage.json")));
   assert.equal(retained.native_review_usage.input_tokens, 1000); assert.equal(retained.completed, false);
   assert.equal((await readFile(path.join(creditState, "native-review-usage.jsonl"), "utf8")).trim().split("\n").length, 1);
