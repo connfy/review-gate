@@ -8,6 +8,15 @@
 - Owner amendment, paraphrased: drop historical-PR calibration; use mock tests
   and at most one dry-run smoke on live web PR #586. First real reviews wait for
   coordinator App setup. Do not push, deploy or post during this build.
+- Owner amendment (2026-11-21), paraphrased: add a zero-dependency Node.js
+  Gemini API fallback engine (`--engine gemini`, pinned to `gemini-4-hydrogen`
+  at `thinkingLevel: "XHIGH"`) for use when hosted Codex and OpenAI
+  `codex-credit` are both exhausted, including an owner-approved fallback
+  exception to normal cross-family review separation when needed; keep
+  read-only controller tools with verbatim source-quote verification to block
+  hallucinated citations; neutralize `API Credit Review:` protocol text while
+  keeping backwards compatibility with published `API Credit Codex Review:`
+  reviews and appending an explicit `Engine:` metadata line.
 
 Number 0005 belongs to the existing parallel base-sync workstream; this ADR does
 not change or incorporate that unmerged work.

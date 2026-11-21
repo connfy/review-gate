@@ -3,18 +3,26 @@ import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { checked, checkoutSnapshot, runNative, git } from "./reviewer/engine.mjs";
+import { checked, checkoutSnapshot, runNative, git, REVIEW_MODEL, REVIEW_EFFORT } from "./reviewer/engine.mjs";
+import { runGemini, GEMINI_REVIEW_MODEL, GEMINI_REVIEW_THINKING_LEVEL } from "./reviewer/engine-gemini.mjs";
 import { appClient, isPublishedReview, listReviews, reviewCycle } from "./reviewer/github.mjs";
 import { freezePullRequest, reviewAndPublish, publicationReceiptKey } from "./reviewer/controller.mjs";
 import { assertAllowedRepository } from "./reviewer/config.mjs";
 
+const ENGINES = new Set(["codex", "gemini"]);
+
 export function parseArgs(args, env = process.env) {
   const [repo, rawNumber, ...rest] = args;
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo ?? "") || !/^[1-9][0-9]*$/.test(rawNumber ?? "") || !Number.isSafeInteger(Number(rawNumber))) throw new Error("Usage: node scripts/review-pr.mjs OWNER/REPO NUMBER [--publish] [--artifacts DIR]");
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo ?? "") || !/^[1-9][0-9]*$/.test(rawNumber ?? "") || !Number.isSafeInteger(Number(rawNumber))) throw new Error("Usage: node scripts/review-pr.mjs OWNER/REPO NUMBER [--publish] [--artifacts DIR] [--engine codex|gemini]");
   const options = { repo: repo.toLowerCase(), number: Number(rawNumber), publish: false };
   for (let i = 0; i < rest.length; i++) {
     if (rest[i] === "--publish") options.publish = true;
     else if (rest[i] === "--artifacts" && rest[i + 1]) options.artifacts = rest[++i];
+    else if (rest[i] === "--engine" && rest[i + 1]) {
+      const engine = rest[++i].toLowerCase();
+      if (!ENGINES.has(engine)) throw new Error(`Unsupported engine: ${rest[i]}`);
+      options.engine = engine;
+    }
     else throw new Error(`Unknown/missing option: ${rest[i]}`);
   }
   assertAllowedRepository(options.repo, env);
@@ -24,6 +32,12 @@ export function parseArgs(args, env = process.env) {
 export async function main(args = process.argv.slice(2)) {
   process.umask(0o077);
   const options = parseArgs(args);
+  const rawEngine = options.engine ?? (process.env.API_REVIEW_ENGINE || "codex");
+  const engine = String(rawEngine).trim().toLowerCase();
+  if (!ENGINES.has(engine)) throw new Error(`Unsupported engine: ${rawEngine}`);
+  const engineLabel = engine === "gemini"
+    ? `${GEMINI_REVIEW_MODEL} (${GEMINI_REVIEW_THINKING_LEVEL.toLowerCase()})`
+    : `${REVIEW_MODEL} (${REVIEW_EFFORT})`;
   assertAllowedRepository(options.repo);
   const readApi = async (endpoint) => JSON.parse(await checked("gh", ["api", endpoint.replace(/^\//, "")]));
   const api = options.publish ? await appClient() : readApi;
@@ -57,8 +71,10 @@ export async function main(args = process.argv.slice(2)) {
     await writeFile(path.join(artifactDir, "diff.patch"), await readFile(path.join(scratch, "diff.patch")));
     await writeFile(path.join(artifactDir, "input.json"), JSON.stringify({ ...snapshot, mergeBase: prepared.mergeBase, checkout: prepared.checkout }, null, 2));
     const { result, publication } = await reviewAndPublish({
-      snapshot, publish: options.publish, api, identity, cleanText: process.env.API_REVIEW_CLEAN_TEXT,
-      performReview: () => runNative({ snapshot, scratch, artifactDir, prepared }),
+      snapshot, publish: options.publish, api, identity, cleanText: process.env.API_REVIEW_CLEAN_TEXT, engineLabel,
+      performReview: () => engine === "gemini"
+        ? runGemini({ snapshot, scratch, artifactDir, prepared })
+        : runNative({ snapshot, scratch, artifactDir, prepared }),
       saveResult: async (result, payload) => {
         await writeFile(path.join(artifactDir, "result.json"), JSON.stringify(result, null, 2));
         await writeFile(path.join(artifactDir, "review-payload.json"), JSON.stringify(payload, null, 2));

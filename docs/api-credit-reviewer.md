@@ -22,26 +22,37 @@ false-positive rates. Human judgement still validates individual findings.
 ## Run on this host
 
 Prerequisites: Node 24+, Git, authenticated `gh` with read access to the target,
-`bwrap` with unprivileged user namespaces, and the existing
-`/home/minhun/.local/bin/codex-credit`. Native CLI **0.170.0** and its sibling
-`codex-code-mode-host`/`codex-exec-server` executables are the inspected adapter
-version (`scripts/reviewer/native-pin.mjs` holds the version, model and effort
-together). Revalidate the adapter against source before changing that version.
-2026-11-18: the owner moved the reviewer to `gpt-6.2-sol` at `medium` on CLI
+plus either:
+
+- **Codex engine (default, `--engine codex`):** `bwrap` with unprivileged user
+  namespaces, and the existing `/home/minhun/.local/bin/codex-credit`. Native CLI
+  **0.170.0** and its sibling `codex-code-mode-host`/`codex-exec-server`
+  executables are the inspected adapter version (`scripts/reviewer/native-pin.mjs`
+  holds the version, model and effort together). Revalidate the adapter against
+  source before changing that version.
+- **Gemini fallback engine (`--engine gemini`):** private Gemini API key file at
+  `~/.config/gemini-credit/api-key` (`GEMINI_CREDIT_KEY_FILE`, mode `0600`),
+  pinned to `gemini-4-hydrogen` at `thinkingLevel: "XHIGH"` in
+  `scripts/reviewer/gemini-pin.mjs`. Use this route when hosted
+  `chatgpt-codex-connector` and `codex-credit` are both exhausted.
+2026-11-18: the owner moved the Codex reviewer to `gpt-6.2-sol` at `medium` on CLI
 0.170.0 while the API credit is short (it was `gpt-6.1-sol` at `high` on
 0.169.0). Revalidation that day: the native rubric, review task and request
 construction are byte-identical between `rust-v0.170.0` and `rust-v0.170.0`;
 `protocol.rs` changed only item-id serialization and moderation records, not
 the review output types; a dry run on a live PR validated the session evidence
 (version, model, effort, approval policy) and the credit ledger.
-The wrapper's key file must exist; it is mounted privately, never printed or
-loaded into the controller. No custom key or App credential goes in an argument.
+The inference key file must exist; it is loaded or mounted privately, never
+printed or logged. No custom key or App credential goes in an argument.
 
 From this trusted checkout, with a live open PR:
 
 ```bash
 # Default: dry run. Does not need the reviewer App or post anything to GitHub.
 node scripts/review-pr.mjs connfy/aimstrings-web 586
+
+# Gemini 4 Hydrogen fallback dry run:
+node scripts/review-pr.mjs connfy/rmo-center 95 --engine gemini
 
 # Only after App setup, deployment activation and permission to post:
 set -a
@@ -50,7 +61,9 @@ set +a
 node scripts/review-pr.mjs connfy/aimstrings-web 586 --publish
 ```
 
-Optional `--artifacts /absolute/directory` selects the retained output parent.
+Optional `--artifacts /absolute/directory` selects the retained output parent,
+and `--engine codex|gemini` (or `API_REVIEW_ENGINE`) selects the review backend
+(`codex` by default).
 Drafts may be dry-run reviewed but cannot be published by this command. There
 is no historical SHA override, request-comment watcher, background daemon,
 automatic retry, or `@codex review` comment emission.
@@ -83,7 +96,21 @@ config; an all-repositories App installation never broadens it implicitly.
    and never posted as a thread. A valid P3-only result is clean even when the
    model's overall label disagrees or its non-blocking location is outside the
    diff. Severity, not that label, determines publication.
-3. Isolate the reviewer with a sparse Bubblewrap filesystem and empty process
+2b. **Gemini fallback (`engine-gemini.mjs`):** sends the frozen diff summary
+    (plus inline diff when `<= 100,000` chars) and frozen-base `AGENTS.md`
+    policies to `gemini-4-hydrogen` (`thinkingLevel: "XHIGH"`) with **only**
+    controller-implemented read-only inspection tools (`list_files`,
+    `read_diff`, `read_file` restricted to frozen `head`/`base`/`policy` paths
+    with symlink containment, `grep_repo` with `--literal-pathspecs -F`, and
+    `submit_review`). No shell execution, host filesystem, GitHub/App keys, or
+    network tools are exposed to the model. Before accepting `submit_review`,
+    the controller requires at least one nonempty read/diff/grep inspection call
+    and verifies every P0–P2 finding's `file_path`, `line_start..line_end`, and
+    verbatim `evidence_quote` against the frozen source (`BASE` for deleted
+    files, `HEAD` for surviving files); invalid quotes fail closed (with up to
+    2 tool-level self-correction retries) and usage/turns are always appended to
+    `~/.local/state/gemini-credit/ledger.jsonl` and `gemini-usage.json`.
+3. Isolate the Codex reviewer with a sparse Bubblewrap filesystem and empty process
    environment. Mount only system runtime files, the Codex executable directory,
    the frozen source, job state and private inference-key/ledger locations. WSL's
    actual resolver symlink target is mounted explicitly. The native read-only
@@ -115,7 +142,10 @@ config; an all-repositories App installation never broadens it implicitly.
    interruption, quota, runtime error, missing output or incomplete access
    produces **no publication**. These checks establish usable evidence, not
    model-review quality. Logs remain available to diagnose rejected evidence.
-6. Build the summary in trusted publisher code. A complete result without
+6. Build the summary in trusted publisher code (`API Credit Review: ...`, with
+   `Engine: \`<model> (<effort>)\`` metadata when supplied by the runner;
+   historical `API Credit Codex Review: ...` reviews remain accepted by the
+   gate when `API_REVIEW_CLEAN_TEXT` is unset). A complete result without
    P0–P2 findings gets the configured clean sentence; model prose never supplies
    that sentence. A findings summary never contains it. Post one GitHub Review
    with `event: COMMENT`, **explicit `commit_id: frozen-head`**, a provenance
