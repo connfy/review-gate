@@ -8,6 +8,8 @@
 
 export const DEFAULT_CLEAN_TEXT = "Codex Review: Didn't find any major issues.";
 export const DEFAULT_API_REVIEW_CLEAN_TEXT =
+  "API Credit Review: No actionable P0–P2 findings.";
+export const LEGACY_API_REVIEW_CLEAN_TEXT =
   "API Credit Codex Review: No actionable P0–P2 findings.";
 export const API_REVIEW_BODY_BLOCKERS_HEADING = "### Blocking findings outside the inline diff";
 export const DEFAULT_CLEAN_REACTION_CONTENT = "+1";
@@ -37,19 +39,26 @@ export const NO_CLEAN_REVIEW_DESCRIPTION =
   "review comment, matching review body, or fresh PR body reaction.";
 
 const HEAD_REF_EVENTS = new Set(["head_ref_force_pushed", "head_ref_restored"]);
+const RESOLVED_CONFIGS = new WeakSet();
 
 export function resolveConfig(config = {}) {
+  if (config && typeof config === "object" && RESOLVED_CONFIGS.has(config)) {
+    return config;
+  }
   // This App is NOT a legacy login-only bot: only a formal exact-head Review
   // from its pinned numeric Bot identity can attest a clean result.
   const apiReviewBotLogin = String(config.apiReviewBotLogin ?? "").trim();
   const apiReviewBotId = String(config.apiReviewBotId ?? "");
   const apiReviewCleanText = config.apiReviewCleanText ?? DEFAULT_API_REVIEW_CLEAN_TEXT;
+  const apiReviewCleanTexts = config.apiReviewCleanText === undefined
+    ? [DEFAULT_API_REVIEW_CLEAN_TEXT, LEGACY_API_REVIEW_CLEAN_TEXT]
+    : [apiReviewCleanText];
   const apiReviewer = apiReviewBotLogin && /^[1-9][0-9]*$/.test(apiReviewBotId) &&
     Number.isSafeInteger(Number(apiReviewBotId)) &&
     typeof apiReviewCleanText === "string" && apiReviewCleanText.trim()
-    ? { login: apiReviewBotLogin, id: apiReviewBotId, cleanText: apiReviewCleanText }
+    ? { login: apiReviewBotLogin, id: apiReviewBotId, cleanText: apiReviewCleanText, cleanTexts: apiReviewCleanTexts }
     : null;
-  return {
+  const resolved = {
     apiReviewBotLogin,
     apiReviewBotId,
     apiReviewCleanText,
@@ -78,6 +87,8 @@ export function resolveConfig(config = {}) {
         ? config.reviewStartWindowMs
         : DEFAULT_REVIEW_START_WINDOW_MS,
   };
+  RESOLVED_CONFIGS.add(resolved);
+  return resolved;
 }
 
 function apiReviewQualifies(review, sha, config) {
@@ -99,7 +110,7 @@ function latestApiBodyBlocker(reviews, sha, config) {
     // These are publisher-owned v1 protocol lines, not model prose (which is
     // quoted). Recognize already-published v1 summaries without a new marker.
     if (!lines.includes(API_REVIEW_BODY_BLOCKERS_HEADING) ||
-        !lines.some((line) => /^API Credit Codex Review: [1-9]\d* actionable P0–P2 finding\(s\)\.$/.test(line))) continue;
+        !lines.some((line) => /^API Credit(?: Codex)? Review: [1-9]\d* actionable P0–P2 finding\(s\)\.$/.test(line))) continue;
     const timestamp = parseTimestamp(review.submitted_at);
     if (latest === null || timestamp > latest.timestamp) latest = { timestamp };
   }
@@ -895,7 +906,7 @@ export function codexCleanEvents({
     }
     const resolved = resolveConfig(config);
     if (apiReviewQualifies(review, sha, resolved) &&
-        body.split("\n").includes(resolved.apiReviewer.cleanText)) {
+        body.split("\n").some((line) => resolved.apiReviewer.cleanTexts.includes(line))) {
       const boundary = apiReviewBoundaryTime({ prCreatedAt, timelineEvents, issueComments, config: resolved });
       if (boundary !== null && parseTimestamp(submittedAt) > boundary) {
         cleanEvents.push(`API-credit review body at ${submittedAt}`);

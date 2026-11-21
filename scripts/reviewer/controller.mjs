@@ -16,10 +16,10 @@ export const publicationReceiptKey = (snapshot) =>
 
 // The model's only return channel is a validated native result. It never
 // selects the destination, reviewed SHAs, review event, clean text, or tokens.
-export async function reviewAndPublish({ snapshot, performReview, saveResult, publish = false, api, identity, cleanText, beforePost }) {
+export async function reviewAndPublish({ snapshot, performReview, saveResult, publish = false, api, identity, cleanText, engineLabel, beforePost }) {
   assertAllowedRepository(snapshot.repo);
   const result = await performReview(snapshot);
-  const payload = reviewPayload(snapshot, result, cleanText);
+  const payload = reviewPayload(snapshot, result, cleanText, { engineLabel });
   await saveResult(result, payload);
   const publication = publish
     ? await publishReview({ api, snapshot, payload, identity, beforePost })

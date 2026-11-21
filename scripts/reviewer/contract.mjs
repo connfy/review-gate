@@ -1,8 +1,8 @@
 import path from "node:path";
-import { API_REVIEW_BODY_BLOCKERS_HEADING } from "../../src/gate.js";
+import { API_REVIEW_BODY_BLOCKERS_HEADING, DEFAULT_API_REVIEW_CLEAN_TEXT } from "../../src/gate.js";
 import { CODEX_CLI_VERSION, REVIEW_EFFORT, REVIEW_MODEL } from "./native-pin.mjs";
 
-export const CLEAN_TEXT = "API Credit Codex Review: No actionable P0–P2 findings.";
+export const CLEAN_TEXT = DEFAULT_API_REVIEW_CLEAN_TEXT;
 export const SHA = /^[0-9a-f]{40}$/;
 export const marker = ({ head, base }) => `<!-- api-credit-review:v1 head=${head} base=${base} -->`;
 const fail = (message) => { throw new Error(message); };
@@ -82,11 +82,13 @@ export function changedLinesFromDiff(diff) {
   return files;
 }
 
-export function reviewPayload(snapshot, result, cleanText = CLEAN_TEXT) {
+export function reviewPayload(snapshot, result, cleanText = CLEAN_TEXT, { engineLabel } = {}) {
   if (!SHA.test(snapshot.head) || !SHA.test(snapshot.base) || !text(cleanText)) fail("Invalid publication contract");
+  if (engineLabel !== undefined && (!text(engineLabel) || /[\r\n`]/.test(engineLabel))) fail("Invalid engine label");
+  const engineLine = engineLabel ? `\nEngine: \`${engineLabel.trim()}\`` : "";
   let body = result.blocking.length === 0
-    ? `${marker(snapshot)}\n\n${cleanText}\n\nReviewed head: \`${snapshot.head}\`\nComparison base: \`${snapshot.base}\`\nNon-blocking P3 findings: ${result.findings.length}.`
-    : `${marker(snapshot)}\n\nAPI Credit Codex Review: ${result.blocking.length} actionable P0–P2 finding(s).\n\nReviewed head: \`${snapshot.head}\`\nComparison base: \`${snapshot.base}\`\nNon-blocking P3 findings: ${result.findings.length - result.blocking.length}.`;
+    ? `${marker(snapshot)}\n\n${cleanText}\n\nReviewed head: \`${snapshot.head}\`\nComparison base: \`${snapshot.base}\`${engineLine}\nNon-blocking P3 findings: ${result.findings.length}.`
+    : `${marker(snapshot)}\n\nAPI Credit Review: ${result.blocking.length} actionable P0–P2 finding(s).\n\nReviewed head: \`${snapshot.head}\`\nComparison base: \`${snapshot.base}\`${engineLine}\nNon-blocking P3 findings: ${result.findings.length - result.blocking.length}.`;
   const unanchored = result.blocking.filter((f) => f.line === null);
   const quote = (value) => value.split(/\r\n|\n|\r/).map((line) => `> ${line}`).join("\n");
   if (unanchored.length) body += `\n\n${API_REVIEW_BODY_BLOCKERS_HEADING}\n\n` + unanchored.map((f) =>

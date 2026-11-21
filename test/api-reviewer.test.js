@@ -218,13 +218,32 @@ test("configured new clean text is shared by publisher and gate", () => {
   const r = { ...review(), body: reviewPayload(snapshot, clean(), text).body };
   assert.equal(evaluate(r).state, "failure"); assert.equal(evaluate(r, { config: { ...config, apiReviewCleanText: text } }).state, "success");
 });
+test("default config accepts neutral and legacy clean text plus both body-only blocker formats; custom cleanText rejects legacy", () => {
+  const legacyClean = "API Credit Codex Review: No actionable P0–P2 findings.";
+  assert.equal(evaluate({ ...review(), body: `${marker(snapshot)}\n\n${legacyClean}` }).state, "success");
+  assert.equal(evaluate({ ...review(), body: `${marker(snapshot)}\n\n${legacyClean}` }, { config: { ...config, apiReviewCleanText: "Custom clean." } }).state, "failure");
+  const unanchored = validateReview({ ...raw(), overall_correctness: "patch is incorrect", findings: [{ ...finding(2), code_location: { absolute_file_path: "/review/src/other.js", line_range: { start: 10, end: 10 } } }] }, options);
+  const neutralBlocker = reviewPayload(snapshot, unanchored).body;
+  const legacyBlocker = neutralBlocker.replace("API Credit Review: 1 actionable", "API Credit Codex Review: 1 actionable");
+  assert.equal(evaluate({ ...review(), body: neutralBlocker }).state, "failure");
+  assert.equal(evaluate({ ...review(), body: legacyBlocker }).state, "failure");
+});
+test("reviewPayload includes optional single-line Engine metadata and rejects injected backticks/newlines", () => {
+  const body = reviewPayload(snapshot, clean(), CLEAN_TEXT, { engineLabel: "gemini-4-hydrogen (xhigh)" }).body;
+  assert.ok(body.includes("\nEngine: `gemini-4-hydrogen (xhigh)`\n"));
+  assert.equal(evaluate({ ...review(), body }).state, "success");
+  assert.throws(() => reviewPayload(snapshot, clean(), CLEAN_TEXT, { engineLabel: "bad\nline" }));
+  assert.throws(() => reviewPayload(snapshot, clean(), CLEAN_TEXT, { engineLabel: "bad`tick" }));
+});
 test("legacy hosted clean reviews keep their existing behavior alongside the new App", () => {
   assert.equal(evaluate({ user: { login: "chatgpt-codex-connector[bot]" }, commit_id: head, submitted_at: review().submitted_at, body: "Codex Review: Didn't find any major issues." }).state, "success");
 });
 test("CLI accepts only live PR inputs, dry-run by default", () => {
   assert.deepEqual(parseArgs(["Connfy/Aimstrings-Web", "42"]), { repo: snapshot.repo, number: 42, publish: false });
   assert.equal(parseArgs([snapshot.repo, "42", "--publish"]).publish, true);
-  for (const args of [[snapshot.repo, "0"], ["--evil", "42"], [snapshot.repo, "42", "--head", head]]) assert.throws(() => parseArgs(args));
+  assert.equal(parseArgs([snapshot.repo, "42", "--engine", "gemini"]).engine, "gemini");
+  assert.equal(parseArgs([snapshot.repo, "42", "--engine", "codex"]).engine, "codex");
+  for (const args of [[snapshot.repo, "0"], ["--evil", "42"], [snapshot.repo, "42", "--head", head], [snapshot.repo, "42", "--engine", "foo"], [snapshot.repo, "42", "--engine"]]) assert.throws(() => parseArgs(args));
 });
 test("review environment has no project trust/MCP, inherited credentials or writable source mounts", () => {
   const cfg = engineConfig({ checkout: "/tmp/source/checkout", policies: "/tmp/source/policies", artifactDir: "/job" });
